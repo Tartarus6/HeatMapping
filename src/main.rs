@@ -6,16 +6,17 @@ use std::fs::File;
 use std::time::Instant;
 use std::u32;
 
-const MAX_DIM: u32 = 500;
+const MAX_DIM: u32 = 500; // controls the size of the heatmap output, the aspect ratio changes based on bounding box, but this controls the longest side
 const WALKING_SPEED: f64 = 5.0; // walking speed in kilometers per hour
 const MAX_WALK_TRANSFER_DISTANCE: f64 = 5000.0; // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
 
-// bounding box for the heatmap output (Amsterdam area)
+// bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MIN_LAT: f64 = 52.032003;
 const BBOX_MAX_LAT: f64 = 52.505422;
 const BBOX_MIN_LON: f64 = 4.407175;
 const BBOX_MAX_LON: f64 = 5.247558;
 
+// constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
     position: Position {
         lat: 52.368262,
@@ -43,7 +44,6 @@ impl SpatialGrid {
     }
 
     fn insert(&mut self, position: Position, stop_id: u32) {
-        // TODO: switch index calculations to be consistend (currently cells near the earth's poles are much smaller than ones near the equator)
         let lat_index: i32 = (position.lat / self.cell_size).floor() as i32;
         let lon_index: i32 = (position.lon / self.cell_size).floor() as i32;
 
@@ -154,10 +154,6 @@ struct Date {
     month: u8,
     day: u8,
 }
-// struct Service {
-//     service_id: u32,
-//     dates_active: Vec<Date>, // list of dates this service runs for
-// }
 
 struct Transfer {
     from_stop_id: u32,
@@ -192,17 +188,19 @@ fn main() {
     let now = Instant::now();
     let travel_times = initialize_dijkstra(&gtfs_data).unwrap();
     println!("Dijkstra: {}ms", now.elapsed().as_millis());
-    println!("{}", travel_times.len());
-    println!("initialized dijkstra");
 
     println!(
         "depart instant time: {}",
         seconds_to_str_time(&DEPART_INSTANT.time)
     );
+    let now = Instant::now();
     generate_heatmap(&gtfs_data, &travel_times, "heatmap.png");
+    println!("Heatmap: {}ms", now.elapsed().as_millis());
     println!("Heatmap saved to heatmap.png");
 }
 
+// TODO: make the data smaller where possible (removing unimportant data, maybe making a separate database not in-memory)
+// reads the gtfs data from the gtfs files and puts them into a GTFSData struct instance
 fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut gtfs_data = GTFSData {
         stops: HashMap::new(),
@@ -301,7 +299,6 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     // services (from calendar_dates)
     let file = File::open("./src/lib/gtfs-nl/calendar_dates.txt")?;
     let mut reader = Reader::from_reader(file);
-    // let mut service_map: HashMap<u32, Vec<Date>> = HashMap::new();
     for result in reader.records() {
         let record = result?;
         let service_id: u32 = record[0].parse().unwrap();
@@ -332,6 +329,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 min_transfer_time: record[7].parse().unwrap_or(0),
             });
     }
+    // walking transfers (just stored as trasnfers)
     for from_stop in gtfs_data.stops.values() {
         let culled_stops = gtfs_data.grid.get_nearby(from_stop.position);
 
@@ -387,21 +385,25 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
 
 // TODO: is there a way to reuse the data from other dijkstra runs, rather than having to totally recalculate for each different starting position?
 // TODO: (maybe) optimize by finding "hub nodes", and precomputing the travel times between them. then using that hub-to-hub time as an offset to prevent the need to calculate paths across hubs
-// runs a multi-souce dijkstra, running once with each stop as the starting position
+// runs the dijkstra algorithm with each stop as a node, with "connections" and "transfers" as the edges
 // returns HashMap<to_stop_id: u32, arrival_time: u32> (arrival time in secons since midnight)
 fn initialize_dijkstra(
     gtfs_data: &GTFSData,
 ) -> Result<HashMap<u32, u32>, Box<dyn std::error::Error>> {
     let mut arrival_times: HashMap<u32, u32> = HashMap::new(); // <to_stop_id, arrival_time>
 
-    // get culled connections list, removing any entries that occured before the depart instant
+    // get culled connections list, removing any entries that occured before the depart instant (max time not used, so set to u32::MAX)
     let culled_connections =
         get_culled_connections(DEPART_INSTANT.time, u32::MAX, &gtfs_data.connections);
 
     let mut priority_queue: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // Min-heap (priority queue) storing pairs of (arrival_time, stop_id)
 
-    // add the time taken to walk to any stop
-    for stop in gtfs_data.stops.values() {
+    // initialize priority queue and arrival times with the time it would take to walk there from the starting position
+    for stop_id in gtfs_data.grid.get_nearby(DEPART_INSTANT.position) {
+        let stop = gtfs_data
+            .stops
+            .get(&stop_id)
+            .ok_or("walking to stop didnt exist")?;
         let arrival_time =
             DEPART_INSTANT.time + get_walk_time(DEPART_INSTANT.position, stop.position);
         arrival_times.insert(stop.stop_id, arrival_time);
@@ -463,32 +465,14 @@ fn initialize_dijkstra(
                 )));
             }
         }
-
-        // TODO: does implementing walking connections prevent the need for handling transfer connections?
-        // explore all walking connections of the current stop
-        // for other_stop in gtfs_data.stops.values() {
-        //     // calculate walk time
-        //     let walk_arrival_time = current_stop_arrival_time
-        //         + get_walk_time(
-        //             gtfs_data
-        //                 .stops
-        //                 .get(&current_stop_id)
-        //                 .ok_or("stop id not in stops")?
-        //                 .position,
-        //             other_stop.position,
-        //         );
-
-        //     // if walk time is faster than saved time to stop, update it
-        //     if walk_arrival_time < *arrival_times.get(&other_stop.stop_id).unwrap_or(&u32::MAX) {
-        //         arrival_times.insert(other_stop.stop_id, walk_arrival_time);
-        //         priority_queue.push(Reverse((walk_arrival_time, other_stop.stop_id))); // push the starting stop onto the priority queue
-        //     }
-        // }
     }
 
     Ok(arrival_times)
 }
 
+// TODO: make this generate some kinda vector graphic maybe
+// generates an image displaying the time it takes to get from the starting position to any other position (within the heatmap) as a color gradient
+// uses the parsed gtfs data and the travel times from the dijkstra algorithm
 fn generate_heatmap(gtfs_data: &GTFSData, travel_times: &HashMap<u32, u32>, output_path: &str) {
     let (min_lat, max_lat, min_lon, max_lon) =
         (BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON);
@@ -511,14 +495,7 @@ fn generate_heatmap(gtfs_data: &GTFSData, travel_times: &HashMap<u32, u32>, outp
 
     let mut pixel_arrival_time_map: HashMap<(u32, u32), u32> = HashMap::new(); // <(px, py), arrival_time>
 
-    // find min/max travel times for color scaling
-    // let min_time = DEPART_INSTANT.time;
-    // let max_time = travel_times
-    //     .values()
-    //     .copied()
-    //     .filter(|&t| t < u32::MAX)
-    //     .max()
-    //     .unwrap_or(min_time + 1);
+    // finding travel times for each pixel, storing in a map
     let mut max_time: u32 = 0; // stores the latest pixel arrival_time found
 
     for py in 0..height {
@@ -547,23 +524,20 @@ fn generate_heatmap(gtfs_data: &GTFSData, travel_times: &HashMap<u32, u32>, outp
         }
     }
 
+    // generating image from values stored in map
     let mut img = ImageBuffer::new(width, height);
-
     for ((px, py), arrival_time) in pixel_arrival_time_map {
         let t = (arrival_time.saturating_sub(DEPART_INSTANT.time) as f64)
             / (max_time - DEPART_INSTANT.time) as f64;
         let color = travel_time_to_color(t.clamp(0.0, 1.0));
 
-        // if haversine_distance(DEPART_INSTANT.position, pixel_pos) < 500.0 {
-        //     color = Rgb([0, 0, 255]);
-        // }
-
         img.put_pixel(px, py, color);
     }
 
-    img.save(output_path).unwrap();
+    img.save(output_path).unwrap(); // create the image file
 }
 
+// TODO: green to yellow gradient is kinda hard to see, fix
 /// Maps a normalized travel time (0.0 = fastest, 1.0 = slowest) to a color.
 /// green -> yellow -> red
 fn travel_time_to_color(t: f64) -> Rgb<u8> {
@@ -580,7 +554,7 @@ fn travel_time_to_color(t: f64) -> Rgb<u8> {
 
 // TODO: if this connection is not in service, skip it
 // TODO: switch to using binary search instead of iterating through until it's found
-// TODO: (maybe) add a `max_time` option to cull entries that are too late as well
+// TODO: add ability to ignore certain transport types (i.e. only no-busses routes)
 // returns a connections hash map with any entries that depart before `min_time` culled
 fn get_culled_connections(
     min_time: u32,
@@ -623,6 +597,14 @@ fn str_time_to_seconds(time_str: &str) -> u32 {
     hours * 3600 + minutes * 60 + seconds
 }
 
+// inverse of `str_time_to_seconds()`
+fn seconds_to_str_time(time: &u32) -> String {
+    let hours = time / 3600;
+    let minutes = (time % 3600) / 60;
+    let seconds = time % 60;
+    return format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
+}
+
 // parses YYYYMMDD date string into Date struct
 fn parse_date(date_str: &str) -> Date {
     Date {
@@ -630,14 +612,6 @@ fn parse_date(date_str: &str) -> Date {
         month: date_str[4..6].parse().unwrap(),
         day: date_str[6..8].parse().unwrap(),
     }
-}
-
-// inverse of `str_time_to_seconds()`
-fn seconds_to_str_time(time: &u32) -> String {
-    let hours = time / 3600;
-    let minutes = (time % 3600) / 60;
-    let seconds = time % 60;
-    return format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
 }
 
 // converts route_type integer to RouteType enum
@@ -666,12 +640,13 @@ fn parse_stop_id(stop_id_str: &str) -> u32 {
     }
 }
 
-// gets the maximum travel time based on walkign speed and maximum distance consts
+// gets the number of seconds taken to walk between 2 positions based on set walking speed
 fn get_walk_time(from_position: Position, to_position: Position) -> u32 {
     let speed_mps = (WALKING_SPEED * 1000.0) / 3600.0;
     return ((haversine_distance(from_position, to_position)) / speed_mps) as u32;
 }
 
+// gets distance in meters between 2 positions
 const EARTH_RADIUS_METER: f64 = 6371000.0;
 fn haversine_distance(position_a: Position, position_b: Position) -> f64 {
     let φ1: f64 = position_a.lat.to_radians();
