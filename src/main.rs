@@ -329,7 +329,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 min_transfer_time: record[7].parse().unwrap_or(0),
             });
     }
-    // walking transfers (just stored as trasnfers)
+    // walking transfers (just stored as transfers)
     for from_stop in gtfs_data.stops.values() {
         let culled_stops = gtfs_data.grid.get_nearby(from_stop.position);
 
@@ -545,13 +545,17 @@ fn generate_heatmap(gtfs_data: &GTFSData, travel_times: &HashMap<u32, u32>, outp
 /// Maps a normalized travel time (0.0 = fastest, 1.0 = slowest) to a color.
 /// green -> yellow -> red
 fn travel_time_to_color(t: f64) -> Rgb<u8> {
-    if t < 0.5 {
+    if t < 0.33 {
+        //blue to green
+        let s = t * 3.0;
+        Rgb([0, (255.0 * s) as u8, (255.0 * (1.0 - s)) as u8])
+    } else if t < 0.66 {
         // green to yellow
-        let s = t * 2.0;
+        let s = (t - 0.33) * 3.0;
         Rgb([(255.0 * s) as u8, 255, 0])
     } else {
         // yellow to red
-        let s = (t - 0.5) * 2.0;
+        let s = (t - 0.66) * 3.0;
         Rgb([255, (255.0 * (1.0 - s)) as u8, 0])
     }
 }
