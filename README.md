@@ -4,6 +4,7 @@ This is a mapping engine, kind of like the bakend of google maps.
 
 The engine is provided GTFS data of a region (such as Amsterdam), and will do all of the math behind mapping throughout that region.
 
+
 ## The Application
 The end goal is to make a UI (probably a website) in which the starting position and departure time are given, then travel times can be shown.
 
@@ -29,3 +30,12 @@ The application will have 2 modes:
 - UX/Responsiveness
     - Heat map updating in real time (target 60fps)
     - (maybe) *Trip Mode* path also updating in real time
+
+
+## How to Run
+
+In order to run it, you'll first need some GTFS data for the heatmap to be based on. For now all of the GTFS paths and stuff are hard-coded to work specifically for the data from OV API's data for the netherlands.
+To get the data, click [this](https://gtfs.ovapi.nl/nl/gtfs-nl.zip) link to download the data.
+Put that zip file in the `src/lib/` directory of this project, and unzip it.
+
+Once you've got the data in there, run the `cargo run --release` command to compile and execute the program. The release flag is reccomended because this is a rather intensive program, and it can take a very long time to finish without the compiler optimizations.

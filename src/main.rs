@@ -509,48 +509,17 @@ fn generate_heatmap(gtfs_data: &GTFSData, travel_times: &HashMap<u32, u32>, outp
     println!("height: {}", height);
     println!("aspect: {}\n", aspect_ratio);
 
-    // let mut pixel_arrival_time_map: HashMap<(u32, u32), u32> = HashMap::new(); // <(px, py), arrival_time>
+    let mut pixel_arrival_time_map: HashMap<(u32, u32), u32> = HashMap::new(); // <(px, py), arrival_time>
 
     // find min/max travel times for color scaling
-    let min_time = DEPART_INSTANT.time;
+    // let min_time = DEPART_INSTANT.time;
     // let max_time = travel_times
     //     .values()
     //     .copied()
     //     .filter(|&t| t < u32::MAX)
     //     .max()
     //     .unwrap_or(min_time + 1);
-    let max_time = DEPART_INSTANT.time + str_time_to_seconds("01:20:00");
-
-    // for py in 0..height {
-    //     for px in 0..width {
-    //         // map pixel to lat/lon
-    //         let lat = max_lat - (py as f64 / height as f64) * (max_lat - min_lat); // flip y axis
-    //         let lon = min_lon + (px as f64 / width as f64) * (max_lon - min_lon);
-
-    //         let pixel_pos = Position { lat, lon };
-
-    //         // find nearest stop
-    //         let nearby_stops = gtfs_data.grid.get_nearby(pixel_pos);
-    //         let nearest_stop_id = nearby_stops.iter().min_by(|a, b| {
-    //             let da = haversine_distance(pixel_pos, gtfs_data.stops.get(a).unwrap().position);
-    //             let db = haversine_distance(pixel_pos, gtfs_data.stops.get(b).unwrap().position);
-    //             da.partial_cmp(&db).unwrap()
-    //         });
-
-    //         match nearest_stop_id.and_then(|stop_id| travel_times.get(stop_id)) {
-    //             Some(&arrival_time) => {
-    //                 let nearest_stop = gtfs_data.stops.get(nearest_stop_id.unwrap()).unwrap();
-
-    //                 let t = (arrival_time.saturating_sub(min_time) as f64)
-    //                     / (max_time - min_time) as f64;
-    //                 travel_time_to_color(t.clamp(0.0, 1.0))
-    //             }
-    //             None => Rgb([0, 0, 0]),
-    //         };
-    //     }
-    // }
-
-    let mut img = ImageBuffer::new(width, height);
+    let mut max_time: u32 = 0; // stores the latest pixel arrival_time found
 
     for py in 0..height {
         for px in 0..width {
@@ -568,28 +537,28 @@ fn generate_heatmap(gtfs_data: &GTFSData, travel_times: &HashMap<u32, u32>, outp
                 da.partial_cmp(&db).unwrap()
             });
 
-            let mut color = match nearest_stop_id.and_then(|id| travel_times.get(id)) {
-                Some(&time) => {
-                    let nearest_stop = gtfs_data.stops.get(nearest_stop_id.unwrap()).unwrap();
-                    println!("position: ({}, {})", pixel_pos.lat, pixel_pos.lon);
-                    println!(
-                        "stop    : ({}, {})",
-                        nearest_stop.position.lat, nearest_stop.position.lon
-                    );
-                    println!("time    : {}\n", seconds_to_str_time(&time));
-
-                    let t = (time.saturating_sub(min_time) as f64) / (max_time - min_time) as f64;
-                    travel_time_to_color(t.clamp(0.0, 1.0))
+            match nearest_stop_id.and_then(|stop_id| travel_times.get(stop_id)) {
+                Some(&arrival_time) => {
+                    max_time = max_time.max(arrival_time);
+                    pixel_arrival_time_map.insert((px, py), arrival_time);
                 }
-                None => Rgb([0, 0, 0]),
+                None => (),
             };
-
-            if haversine_distance(DEPART_INSTANT.position, pixel_pos) < 500.0 {
-                color = Rgb([0, 0, 255]);
-            }
-
-            img.put_pixel(px, py, color);
         }
+    }
+
+    let mut img = ImageBuffer::new(width, height);
+
+    for ((px, py), arrival_time) in pixel_arrival_time_map {
+        let t = (arrival_time.saturating_sub(DEPART_INSTANT.time) as f64)
+            / (max_time - DEPART_INSTANT.time) as f64;
+        let color = travel_time_to_color(t.clamp(0.0, 1.0));
+
+        // if haversine_distance(DEPART_INSTANT.position, pixel_pos) < 500.0 {
+        //     color = Rgb([0, 0, 255]);
+        // }
+
+        img.put_pixel(px, py, color);
     }
 
     img.save(output_path).unwrap();
