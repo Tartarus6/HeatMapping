@@ -149,6 +149,7 @@ struct StopTime {
     departure_time: u32, // seconds since midnight (note, can sometimes be greater than 24 hours worth)
 }
 
+#[derive(Eq, Hash, PartialEq)]
 struct Date {
     year: u32,
     month: u8,
@@ -170,14 +171,20 @@ struct Connection {
     departure_time: u32, // time when departing towards (neighbor) stop (in seconds since midnight)
 }
 
+#[derive(PartialEq)]
+enum ServiceExceptionType {
+    SERVICE_ADDED,
+    SERVICE_REMOVED,
+}
+
 struct GTFSData {
-    stops: HashMap<u32, Stop>,
-    grid: SpatialGrid,
-    routes: HashMap<u32, Route>,
-    trips: HashMap<u32, Trip>,
-    services: HashMap<u32, Vec<Date>>, // <service_id, dates that service runs for>
-    transfers: HashMap<u32, Vec<Transfer>>, // <from_stop_id, list of transfers from stop>
-    connections: HashMap<u32, Vec<Connection>>, // <from_stop_id, list of connections>
+    stops: HashMap<u32, Stop>,                            // <stop_id, Stop>
+    grid: SpatialGrid,                                    //
+    routes: HashMap<u32, Route>,                          // <route_id, Route>
+    trips: HashMap<u32, Trip>,                            // <trip_id, Trip>
+    services: HashMap<(u32, Date), ServiceExceptionType>, // <(service_id, Date), exception_type>
+    transfers: HashMap<u32, Vec<Transfer>>, // <from_stop_id, list of Transfers from stop>
+    connections: HashMap<u32, Vec<Connection>>, // <from_stop_id, list of Connections>
 }
 
 fn main() {
@@ -303,12 +310,11 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         let record = result?;
         let service_id: u32 = record[0].parse().unwrap();
         let date = parse_date(&record[1]);
+        let exception_type: u32 = record[2].parse().unwrap_or(0); // default to 0, which lets `parse_exception_type()` decide the default
 
         gtfs_data
             .services
-            .entry(service_id)
-            .or_insert_with(Vec::new)
-            .push(date);
+            .insert((service_id, date), parse_exception_type(exception_type));
     }
     println!("Loaded {} services", gtfs_data.services.len());
 
@@ -396,8 +402,12 @@ fn initialize_dijkstra(
     let mut arrival_times: HashMap<u32, u32> = HashMap::new(); // <to_stop_id, arrival_time>
 
     // get culled connections list, removing any entries that occured before the depart instant (max time not used, so set to u32::MAX)
-    let culled_connections =
-        get_culled_connections(DEPART_INSTANT.time, u32::MAX, &gtfs_data.connections);
+    let culled_connections = get_culled_connections(
+        DEPART_INSTANT.time,
+        u32::MAX,
+        &gtfs_data.connections,
+        &gtfs_data,
+    );
 
     let mut priority_queue: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // Min-heap (priority queue) storing pairs of (arrival_time, stop_id)
 
@@ -556,7 +566,6 @@ fn travel_time_to_color(t: f64) -> Rgb<u8> {
     }
 }
 
-// TODO: if this connection is not in service, skip it
 // TODO: switch to using binary search instead of iterating through until it's found
 // TODO: add ability to ignore certain transport types (i.e. only no-busses routes)
 // returns a connections hash map with any entries that depart before `min_time` culled
@@ -564,6 +573,7 @@ fn get_culled_connections(
     min_time: u32,
     max_time: u32,
     connections_map: &HashMap<u32, Vec<Connection>>,
+    gtfs_data: &GTFSData,
 ) -> HashMap<u32, Vec<Connection>> {
     println!("min_time: {}", min_time);
     println!("max_time: {}", max_time);
@@ -575,6 +585,20 @@ fn get_culled_connections(
             // if departure_time already passed, skip it
             // or if arrival_time is too late, skip it
             if connection.departure_time < min_time || connection.arrival_time > max_time {
+                continue;
+            }
+
+            // TODO: fix service_exception_type definition to be safer (stop using `unwrap()`)
+            let service_exception_type = gtfs_data
+                .services
+                .get(&(
+                    gtfs_data.trips.get(&connection.trip_id).unwrap().service_id,
+                    DEPART_INSTANT.date,
+                ))
+                .unwrap_or(&ServiceExceptionType::SERVICE_REMOVED);
+
+            // if connection not in service today, skip it
+            if *service_exception_type != ServiceExceptionType::SERVICE_ADDED {
                 continue;
             }
 
@@ -631,7 +655,17 @@ fn parse_route_type(route_type: u32) -> RouteType {
         7 => RouteType::FUNICULAR,
         11 => RouteType::TROLLEYBUS,
         12 => RouteType::MONORAIL,
-        _ => RouteType::BUS, // default to bus for unknown types
+        _ => RouteType::BUS, // TODO: switch to some other default to specify that it's unknown
+                             // TODO: maybe add support for more route types, if needed
+    }
+}
+
+// converts exception_type integer to ServiceExceptionType enum
+fn parse_exception_type(exception_type: u32) -> ServiceExceptionType {
+    match exception_type {
+        1 => ServiceExceptionType::SERVICE_ADDED,
+        2 => ServiceExceptionType::SERVICE_REMOVED,
+        _ => ServiceExceptionType::SERVICE_REMOVED,
     }
 }
 
