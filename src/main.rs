@@ -1,10 +1,13 @@
 use csv::Reader;
 use image::{ImageBuffer, Rgb};
+use pollster::FutureExt;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::fs::File;
 use std::time::Instant;
 use std::u32;
+
+mod shader;
 
 const MAX_DIM: u32 = 500; // controls the size of the heatmap output, the aspect ratio changes based on bounding box, but this controls the longest side
 const WALKING_SPEED: f64 = 5.0; // walking speed in kilometers per hour
@@ -197,6 +200,7 @@ fn main() {
     generate_heatmap(&gtfs_data, &travel_times, "heatmap.png");
     println!("Heatmap: {}ms", now.elapsed().as_millis());
     println!("Heatmap saved to heatmap.png");
+    shader::run().block_on();
 }
 
 // TODO: make the data smaller where possible (removing unimportant data, maybe making a separate database not in-memory)
