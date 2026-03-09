@@ -11,10 +11,10 @@ const WALKING_SPEED: f64 = 5.0; // walking speed in kilometers per hour
 const MAX_WALK_TRANSFER_DISTANCE: f64 = 5000.0; // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
 
 // bounding box for the heatmap output (Amsterdam-ish area)
-const BBOX_MIN_LAT: f64 = 52.032003;
-const BBOX_MAX_LAT: f64 = 52.505422;
-const BBOX_MIN_LON: f64 = 4.407175;
-const BBOX_MAX_LON: f64 = 5.247558;
+const BBOX_MIN_LAT: f64 = 52.132003;
+const BBOX_MAX_LAT: f64 = 52.405422;
+const BBOX_MIN_LON: f64 = 4.607175;
+const BBOX_MAX_LON: f64 = 5.047558;
 
 // constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
@@ -22,7 +22,7 @@ const DEPART_INSTANT: DepartInstant = DepartInstant {
         lat: 52.368262,
         lon: 4.904503,
     },
-    time: 32400,
+    time: 32400, // 09:00:00
     date: Date {
         year: 2026,
         month: 03,
@@ -355,6 +355,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     println!("Loaded {} transfers", gtfs_data.transfers.len());
 
     // connections
+    let mut connection_count: u32 = 0;
     for (_, trip) in gtfs_data.trips.iter_mut() {
         // sort stop times to be in order
         trip.stop_times
@@ -363,6 +364,8 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         // skipping last index since we are looking at pairs of stops
         for i in 0..trip.stop_times.len() - 1 {
             let from_stop_id = trip.stop_times[i].stop_id;
+
+            connection_count += 1;
 
             gtfs_data
                 .connections
@@ -378,7 +381,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Loaded {} connections", gtfs_data.connections.len());
+    println!("Loaded {} connections", connection_count);
 
     Ok(gtfs_data)
 }
@@ -470,6 +473,7 @@ fn initialize_dijkstra(
     Ok(arrival_times)
 }
 
+// TODO: split the map into regions that share a common best path, within region just apply a gradient rather than having to recalculate optimal path for each pixel
 // TODO: make this generate some kinda vector graphic maybe
 // generates an image displaying the time it takes to get from the starting position to any other position (within the heatmap) as a color gradient
 // uses the parsed gtfs data and the travel times from the dijkstra algorithm
