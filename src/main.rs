@@ -487,7 +487,7 @@ fn initialize_dijkstra(
 // TODO: make this generate some kinda vector graphic maybe
 // generates an image displaying the time it takes to get from the starting position to any other position (within the heatmap) as a color gradient
 // uses the parsed gtfs data and the travel times from the dijkstra algorithm
-fn generate_heatmap(gtfs_data: &GTFSData, travel_times: &HashMap<u32, u32>, output_path: &str) {
+fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output_path: &str) {
     let (min_lat, max_lat, min_lon, max_lon) =
         (BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON);
 
@@ -520,18 +520,30 @@ fn generate_heatmap(gtfs_data: &GTFSData, travel_times: &HashMap<u32, u32>, outp
 
             let pixel_pos = Position { lat, lon };
 
-            // find nearest stop
+            // find best stop
             let nearby_stops = gtfs_data.grid.get_nearby(pixel_pos);
-            let nearest_stop_id = nearby_stops.iter().min_by(|a, b| {
-                let da = haversine_distance(pixel_pos, gtfs_data.stops.get(a).unwrap().position);
-                let db = haversine_distance(pixel_pos, gtfs_data.stops.get(b).unwrap().position);
+            let best_stop_id = nearby_stops.iter().min_by(|a, b| {
+                // sort stops based on stop arrival time + walk time to pixel_pos from stop
+                let stop_a = gtfs_data.stops.get(a).unwrap();
+                let stop_b = gtfs_data.stops.get(b).unwrap();
+                let da = get_walk_time(pixel_pos, stop_a.position);
+                // + arrival_times.get(&stop_a.stop_id).unwrap();
+                let db = get_walk_time(pixel_pos, stop_b.position);
+                // + arrival_times.get(&stop_b.stop_id).unwrap();
                 da.partial_cmp(&db).unwrap()
             });
 
-            match nearest_stop_id.and_then(|stop_id| travel_times.get(stop_id)) {
+            match best_stop_id.and_then(|stop_id| arrival_times.get(stop_id)) {
                 Some(&arrival_time) => {
                     max_time = max_time.max(arrival_time);
-                    pixel_arrival_time_map.insert((px, py), arrival_time);
+                    pixel_arrival_time_map.insert(
+                        (px, py),
+                        arrival_time
+                            + get_walk_time(
+                                pixel_pos,
+                                gtfs_data.stops.get(best_stop_id.unwrap()).unwrap().position,
+                            ),
+                    );
                 }
                 None => (),
             };
@@ -589,6 +601,7 @@ fn get_culled_connections(
             }
 
             // TODO: fix service_exception_type definition to be safer (stop using `unwrap()`)
+            // TODO: this service exception type check is really slow i think, gotta speed this up (i think it alone is adding 4 seconds of compute)
             let service_exception_type = gtfs_data
                 .services
                 .get(&(
