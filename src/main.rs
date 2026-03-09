@@ -1,10 +1,13 @@
 use csv::Reader;
 use image::{ImageBuffer, Rgb};
+use pollster::FutureExt;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::fs::File;
 use std::time::Instant;
 use std::u32;
+
+mod shader;
 
 const MAX_DIM: u32 = 500; // controls the size of the heatmap output, the aspect ratio changes based on bounding box, but this controls the longest side
 const WALKING_SPEED: f64 = 5.0; // walking speed in kilometers per hour
@@ -204,6 +207,7 @@ fn main() {
     generate_heatmap(&gtfs_data, &travel_times, "heatmap.png");
     println!("Heatmap: {}ms", now.elapsed().as_millis());
     println!("Heatmap saved to heatmap.png");
+    shader::run().block_on();
 }
 
 // TODO: make the data smaller where possible (removing unimportant data, maybe making a separate database not in-memory)
@@ -335,7 +339,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 min_transfer_time: record[7].parse().unwrap_or(0),
             });
     }
-    // walking transfers (just stored as trasnfers)
+    // walking transfers (just stored as transfers)
     for from_stop in gtfs_data.stops.values() {
         let culled_stops = gtfs_data.grid.get_nearby(from_stop.position);
 
@@ -567,13 +571,17 @@ fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, out
 /// Maps a normalized travel time (0.0 = fastest, 1.0 = slowest) to a color.
 /// green -> yellow -> red
 fn travel_time_to_color(t: f64) -> Rgb<u8> {
-    if t < 0.5 {
+    if t < 0.33 {
+        //blue to green
+        let s = t * 3.0;
+        Rgb([0, (255.0 * s) as u8, (255.0 * (1.0 - s)) as u8])
+    } else if t < 0.66 {
         // green to yellow
-        let s = t * 2.0;
+        let s = (t - 0.33) * 3.0;
         Rgb([(255.0 * s) as u8, 255, 0])
     } else {
         // yellow to red
-        let s = (t - 0.5) * 2.0;
+        let s = (t - 0.66) * 3.0;
         Rgb([255, (255.0 * (1.0 - s)) as u8, 0])
     }
 }

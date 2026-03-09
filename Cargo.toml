@@ -8,3 +8,6 @@ csv = "1.4.0"
 exitfailure = "0.5.1"
 image = "0.25.9"
 serde = { version = "1.0.228", features = ["derive"] }
+wgpu = { version = "28.0", features = ["spirv"] }
+pollster = "0.3"
+futures-intrusive = "0.4"
