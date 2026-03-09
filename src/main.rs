@@ -9,9 +9,12 @@ use std::u32;
 
 mod shader;
 
-const MAX_DIM: u32 = 500; // controls the size of the heatmap output, the aspect ratio changes based on bounding box, but this controls the longest side
-const WALKING_SPEED: f64 = 5.0; // walking speed in kilometers per hour
-const MAX_WALK_TRANSFER_DISTANCE: f64 = 5000.0; // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
+/// controls the size of the heatmap output, the aspect ratio changes based on bounding box, but this controls the longest side
+const MAX_DIM: u32 = 500;
+/// walking speed in kilometers per hour
+const WALKING_SPEED: f64 = 5.0;
+/// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
+const MAX_WALK_TRANSFER_DISTANCE: f64 = 5000.0;
 
 // bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MIN_LAT: f64 = 52.132003;
@@ -19,7 +22,7 @@ const BBOX_MAX_LAT: f64 = 52.405422;
 const BBOX_MIN_LON: f64 = 4.607175;
 const BBOX_MAX_LON: f64 = 5.047558;
 
-// constants for where/when we are starting from
+/// constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
     position: Position {
         lat: 52.368262,
@@ -34,7 +37,8 @@ const DEPART_INSTANT: DepartInstant = DepartInstant {
 };
 
 struct SpatialGrid {
-    map: HashMap<(i32, i32), Vec<u32>>, // <(lat_index, lon_index), list of stop_ids>
+    /// <(lat_index, lon_index), list of stop_ids>
+    map: HashMap<(i32, i32), Vec<u32>>,
     cell_size: f64,
 }
 
@@ -88,11 +92,12 @@ impl SpatialGrid {
 
 struct DepartInstant {
     position: Position,
-    time: u32, // seconds since midnight
+    /// seconds since midnight
+    time: u32,
     date: Date,
 }
 
-// represents a position
+/// represents a position on the earth (latitude, longitude)
 #[derive(Clone, Copy)]
 struct Position {
     lat: f64,
@@ -106,7 +111,7 @@ struct Stop {
     position: Position,
 }
 
-/*
+/**
 Transit type (route_type in routes.txt) values:
  - 0 : Tram, Streetcar, Light rail. Any light rail or street level system within a metropolitan area.
  - 1 : Subway, Metro. Any underground rail system within a metropolitan area.
@@ -117,8 +122,7 @@ Transit type (route_type in routes.txt) values:
  - 6 : Aerial lift, suspended cable car (e.g., gondola lift, aerial tramway). Cable transport where cabins, cars, gondolas or open chairs are suspended by means of one or more cables.
  - 7 : Funicular. Any rail system designed for steep inclines.
  - 11: Trolleybus. Electric buses that draw power from overhead wires using poles.
- - 12: Monorail. Railway in which the track consists of a single rail or a beam.
-*/
+ - 12: Monorail. Railway in which the track consists of a single rail or a beam.*/
 enum RouteType {
     TRAM,
     SUBWAY,
@@ -148,8 +152,10 @@ struct StopTime {
     trip_id: u32,
     stop_sequence: u16,
     stop_id: u32,
-    arrival_time: u32, // seconds since midnight (note, can sometimes be greater than 24 hours worth)
-    departure_time: u32, // seconds since midnight (note, can sometimes be greater than 24 hours worth)
+    /// seconds since midnight (note, can sometimes be greater than 24 hours worth)
+    arrival_time: u32,
+    /// seconds since midnight (note, can sometimes be greater than 24 hours worth)
+    departure_time: u32,
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -162,16 +168,20 @@ struct Date {
 struct Transfer {
     from_stop_id: u32,
     to_stop_id: u32,
-    min_transfer_time: u32, // seconds
+    /// (in seconds)
+    min_transfer_time: u32,
 }
 
 #[derive(Clone, Copy)]
 struct Connection {
     from_stop_id: u32,
     to_stop_id: u32,
-    trip_id: u32,        // id of parent trip
-    arrival_time: u32, // time when arriving at destination (neighbor) stop (in seconds since midnight)
-    departure_time: u32, // time when departing towards (neighbor) stop (in seconds since midnight)
+    /// id of parent trip
+    trip_id: u32,
+    /// time when arriving at destination (neighbor) stop (in seconds since midnight)
+    arrival_time: u32,
+    /// time when departing towards (neighbor) stop (in seconds since midnight)
+    departure_time: u32,
 }
 
 #[derive(PartialEq)]
@@ -181,13 +191,20 @@ enum ServiceExceptionType {
 }
 
 struct GTFSData {
-    stops: HashMap<u32, Stop>,                            // <stop_id, Stop>
-    grid: SpatialGrid,                                    //
-    routes: HashMap<u32, Route>,                          // <route_id, Route>
-    trips: HashMap<u32, Trip>,                            // <trip_id, Trip>
-    services: HashMap<(u32, Date), ServiceExceptionType>, // <(service_id, Date), exception_type>
-    transfers: HashMap<u32, Vec<Transfer>>, // <from_stop_id, list of Transfers from stop>
-    connections: HashMap<u32, Vec<Connection>>, // <from_stop_id, list of Connections>
+    /// <stop_id, Stop>
+    stops: HashMap<u32, Stop>,
+    /// SpacialGrid of stop_ids
+    grid: SpatialGrid,
+    /// <route_id, Route>
+    routes: HashMap<u32, Route>,
+    /// <trip_id, Trip>
+    trips: HashMap<u32, Trip>,
+    /// <(service_id, Date), exception_type>
+    services: HashMap<(u32, Date), ServiceExceptionType>,
+    /// <from_stop_id, list of Transfers from stop>
+    transfers: HashMap<u32, Vec<Transfer>>,
+    /// <from_stop_id, list of Connections>
+    connections: HashMap<u32, Vec<Connection>>,
 }
 
 fn main() {
@@ -211,7 +228,7 @@ fn main() {
 }
 
 // TODO: make the data smaller where possible (removing unimportant data, maybe making a separate database not in-memory)
-// reads the gtfs data from the gtfs files and puts them into a GTFSData struct instance
+/// reads the gtfs data from the gtfs files and puts them into a GTFSData struct instance
 fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut gtfs_data = GTFSData {
         stops: HashMap::new(),
@@ -398,8 +415,8 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
 
 // TODO: is there a way to reuse the data from other dijkstra runs, rather than having to totally recalculate for each different starting position?
 // TODO: (maybe) optimize by finding "hub nodes", and precomputing the travel times between them. then using that hub-to-hub time as an offset to prevent the need to calculate paths across hubs
-// runs the dijkstra algorithm with each stop as a node, with "connections" and "transfers" as the edges
-// returns HashMap<to_stop_id: u32, arrival_time: u32> (arrival time in secons since midnight)
+/// runs the dijkstra algorithm with each stop as a node, with "connections" and "transfers" as the edges
+/// returns HashMap<to_stop_id: u32, arrival_time: u32> (arrival time in secons since midnight)
 fn initialize_dijkstra(
     gtfs_data: &GTFSData,
 ) -> Result<HashMap<u32, u32>, Box<dyn std::error::Error>> {
@@ -489,8 +506,8 @@ fn initialize_dijkstra(
 
 // TODO: split the map into regions that share a common best path, within region just apply a gradient rather than having to recalculate optimal path for each pixel
 // TODO: make this generate some kinda vector graphic maybe
-// generates an image displaying the time it takes to get from the starting position to any other position (within the heatmap) as a color gradient
-// uses the parsed gtfs data and the travel times from the dijkstra algorithm
+/// generates an image displaying the time it takes to get from the starting position to any other position (within the heatmap) as a color gradient
+/// uses the parsed gtfs data and the travel times from the dijkstra algorithm
 fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output_path: &str) {
     let (min_lat, max_lat, min_lon, max_lon) =
         (BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON);
@@ -567,28 +584,17 @@ fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, out
     img.save(output_path).unwrap(); // create the image file
 }
 
-// TODO: green to yellow gradient is kinda hard to see, fix
 /// Maps a normalized travel time (0.0 = fastest, 1.0 = slowest) to a color.
-/// green -> yellow -> red
+/// white -> black
 fn travel_time_to_color(t: f64) -> Rgb<u8> {
-    if t < 0.33 {
-        //blue to green
-        let s = t * 3.0;
-        Rgb([0, (255.0 * s) as u8, (255.0 * (1.0 - s)) as u8])
-    } else if t < 0.66 {
-        // green to yellow
-        let s = (t - 0.33) * 3.0;
-        Rgb([(255.0 * s) as u8, 255, 0])
-    } else {
-        // yellow to red
-        let s = (t - 0.66) * 3.0;
-        Rgb([255, (255.0 * (1.0 - s)) as u8, 0])
-    }
+    // white to black
+    let s = ((1.0 - t) * 255.0) as u8;
+    Rgb([s, s, s])
 }
 
 // TODO: switch to using binary search instead of iterating through until it's found
 // TODO: add ability to ignore certain transport types (i.e. only no-busses routes)
-// returns a connections hash map with any entries that depart before `min_time` culled
+/// returns a connections hash map with any entries that depart before `min_time` culled
 fn get_culled_connections(
     min_time: u32,
     max_time: u32,
@@ -634,7 +640,7 @@ fn get_culled_connections(
     return culled_connections_map;
 }
 
-// turns time in hh:mm:ss format into number of seconds since midnight
+/// turns time in hh:mm:ss format into number of seconds since midnight
 fn str_time_to_seconds(time_str: &str) -> u32 {
     let parts: Vec<&str> = time_str.split(":").collect();
     assert_eq!(parts.len(), 3);
@@ -646,7 +652,7 @@ fn str_time_to_seconds(time_str: &str) -> u32 {
     hours * 3600 + minutes * 60 + seconds
 }
 
-// inverse of `str_time_to_seconds()`
+/// turns time in seconds since midnight into hh:mm:ss format
 fn seconds_to_str_time(time: &u32) -> String {
     let hours = time / 3600;
     let minutes = (time % 3600) / 60;
@@ -654,7 +660,7 @@ fn seconds_to_str_time(time: &u32) -> String {
     return format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
 }
 
-// parses YYYYMMDD date string into Date struct
+/// parses YYYYMMDD date string into Date struct
 fn parse_date(date_str: &str) -> Date {
     Date {
         year: date_str[0..4].parse().unwrap(),
@@ -663,7 +669,7 @@ fn parse_date(date_str: &str) -> Date {
     }
 }
 
-// converts route_type integer to RouteType enum
+/// converts route_type integer to RouteType enum
 fn parse_route_type(route_type: u32) -> RouteType {
     match route_type {
         0 => RouteType::TRAM,
@@ -681,7 +687,7 @@ fn parse_route_type(route_type: u32) -> RouteType {
     }
 }
 
-// converts exception_type integer to ServiceExceptionType enum
+/// converts exception_type integer to ServiceExceptionType enum
 fn parse_exception_type(exception_type: u32) -> ServiceExceptionType {
     match exception_type {
         1 => ServiceExceptionType::SERVICE_ADDED,
@@ -690,7 +696,7 @@ fn parse_exception_type(exception_type: u32) -> ServiceExceptionType {
     }
 }
 
-// parses stop_id, handling both "600737" and "stoparea:600737" formats
+/// parses stop_id, handling both "600737" and "stoparea:600737" formats
 fn parse_stop_id(stop_id_str: &str) -> u32 {
     if let Some(pos) = stop_id_str.rfind(':') {
         stop_id_str[pos + 1..].parse().unwrap()
@@ -699,13 +705,13 @@ fn parse_stop_id(stop_id_str: &str) -> u32 {
     }
 }
 
-// gets the number of seconds taken to walk between 2 positions based on set walking speed
+/// gets the number of seconds taken to walk between 2 positions based on set walking speed
 fn get_walk_time(from_position: Position, to_position: Position) -> u32 {
     let speed_mps = (WALKING_SPEED * 1000.0) / 3600.0;
     return ((haversine_distance(from_position, to_position)) / speed_mps) as u32;
 }
 
-// gets distance in meters between 2 positions
+/// gets distance in meters between 2 positions
 const EARTH_RADIUS_METER: f64 = 6371000.0;
 fn haversine_distance(position_a: Position, position_b: Position) -> f64 {
     let φ1: f64 = position_a.lat.to_radians();
