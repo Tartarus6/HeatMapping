@@ -1,4 +1,14 @@
-pub async fn run() {
+use wgpu::{BufferUsages, util::DeviceExt};
+
+use crate::{BBOX_MAX, BBOX_MIN};
+
+/// stop_positions: (latitude, longitude)
+pub async fn run(
+    stop_positions: &Vec<[f32; 2]>,
+    pixels_width: u32,
+    pixels_height: u32,
+    output_path: &str,
+) {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         ..Default::default()
@@ -13,11 +23,34 @@ pub async fn run() {
         .unwrap();
     let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
 
-    let texture_size = 256u32;
+    // TODO: is this right?
+    // let stop_position_pixels_bytes: Vec<u8> = stop_position_pixels
+    //     .iter()
+    //     .flat_map(|(x, y)| [x.to_le_bytes(), y.to_le_bytes()])
+    //     .flatten()
+    //     .collect::<Vec<u8>>();
+    let stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Stops Buffer"),
+        contents: bytemuck::cast_slice(&stop_positions),
+        usage: BufferUsages::STORAGE,
+    });
+
+    let dimensions_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Config Buffer"),
+        contents: bytemuck::cast_slice(&[pixels_width as f32, pixels_height as f32]),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+
+    let bounding_box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Bounding Box Buffer"),
+        contents: bytemuck::cast_slice(&[BBOX_MIN.lat, BBOX_MIN.lon, BBOX_MAX.lat, BBOX_MAX.lon]),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+
     let texture_desc = wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
-            width: texture_size,
-            height: texture_size,
+            width: pixels_width,
+            height: pixels_height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -34,7 +67,13 @@ pub async fn run() {
     // we need to store this for later
     let u32_size = std::mem::size_of::<u32>() as u32;
 
-    let output_buffer_size = (u32_size * texture_size * texture_size) as wgpu::BufferAddress;
+    // Calculate bytes per row and align it to 256
+    let unpadded_bytes_per_row = pixels_width * u32_size;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padding = (align - unpadded_bytes_per_row % align) % align;
+    let padded_bytes_per_row = unpadded_bytes_per_row + padding;
+
+    let output_buffer_size = (padded_bytes_per_row * pixels_height) as wgpu::BufferAddress;
     let output_buffer_desc = wgpu::BufferDescriptor {
         size: output_buffer_size,
         usage: wgpu::BufferUsages::COPY_DST
@@ -45,11 +84,74 @@ pub async fn run() {
     };
     let output_buffer = device.create_buffer(&output_buffer_desc);
 
+    // A bind group layout describes the types of resources that a bind group can contain. Think
+    // of this like a C-style header declaration, ensuring both the pipeline and bind group agree
+    // on the types of resources.
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            // Input buffer
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    // The bind group contains the actual resources to bind to the pipeline.
+    //
+    // Even when the buffers are individually dropped, wgpu will keep the bind group and buffers
+    // alive until the bind group itself is dropped.
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: stops_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: dimensions_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: bounding_box_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
     let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/shader.wgsl"));
 
     let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Render Pipeline Layout"),
-        bind_group_layouts: &[],
+        bind_group_layouts: &[&bind_group_layout],
         immediate_size: 0,
     });
 
@@ -127,6 +229,7 @@ pub async fn run() {
         let mut render_pass = encoder.begin_render_pass(&render_pass_desc);
 
         render_pass.set_pipeline(&render_pipeline);
+        render_pass.set_bind_group(0, &bind_group, &[]);
         render_pass.draw(0..3, 0..1);
     }
 
@@ -141,8 +244,8 @@ pub async fn run() {
             buffer: &output_buffer,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(u32_size * texture_size),
-                rows_per_image: Some(texture_size),
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(pixels_height),
             },
         },
         texture_desc.size,
@@ -167,9 +270,17 @@ pub async fn run() {
         let data = buffer_slice.get_mapped_range();
 
         use image::{ImageBuffer, Rgba};
+
+        // Extract actual pixel data by removing padding from each row
+        let mut unpadded_data = Vec::with_capacity((pixels_width * pixels_height * 4) as usize);
+        for chunk in data.chunks_exact(padded_bytes_per_row as usize) {
+            unpadded_data.extend_from_slice(&chunk[..unpadded_bytes_per_row as usize]);
+        }
+
         let buffer =
-            ImageBuffer::<Rgba<u8>, _>::from_raw(texture_size, texture_size, data).unwrap();
-        buffer.save("image.png").unwrap();
+            ImageBuffer::<Rgba<u8>, _>::from_raw(pixels_width, pixels_height, unpadded_data)
+                .unwrap();
+        buffer.save(output_path).unwrap();
     }
     output_buffer.unmap();
 }

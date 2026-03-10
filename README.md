@@ -39,3 +39,5 @@ To get the data, click [this](https://gtfs.ovapi.nl/nl/gtfs-nl.zip) link to down
 Put that zip file in the `src/lib/` directory of this project, and unzip it.
 
 Once you've got the data in there, run the `cargo run --release` command to compile and execute the program. The release flag is reccomended because this is a rather intensive program, and it can take a very long time to finish without the compiler optimizations.
+
+The outputs from the program will be placed in the `output/` directory.

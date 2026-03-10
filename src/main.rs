@@ -1,9 +1,11 @@
 use csv::Reader;
 use image::{ImageBuffer, Rgb};
 use pollster::FutureExt;
+use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::fs::File;
+use std::io::{Read, Write};
 use std::time::Instant;
 use std::u32;
 
@@ -14,13 +16,17 @@ const MAX_DIM: u32 = 500;
 /// walking speed in kilometers per hour
 const WALKING_SPEED: f64 = 5.0;
 /// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
-const MAX_WALK_TRANSFER_DISTANCE: f64 = 5000.0;
+const MAX_WALK_TRANSFER_DISTANCE: f64 = 500.0;
 
 // bounding box for the heatmap output (Amsterdam-ish area)
-const BBOX_MIN_LAT: f64 = 52.132003;
-const BBOX_MAX_LAT: f64 = 52.405422;
-const BBOX_MIN_LON: f64 = 4.607175;
-const BBOX_MAX_LON: f64 = 5.047558;
+const BBOX_MIN: Position = Position {
+    lat: 52.132003,
+    lon: 4.607175,
+};
+const BBOX_MAX: Position = Position {
+    lat: 52.405422,
+    lon: 5.047558,
+};
 
 /// constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
@@ -36,6 +42,18 @@ const DEPART_INSTANT: DepartInstant = DepartInstant {
     },
 };
 
+const OUTPUT_DIRECTORY: &str = "./output/";
+const CACHE_DIRECTORY: &str = "./cache/";
+const GTFS_DIRECTORY: &str = "./src/lib/gtfs-nl/";
+
+struct DepartInstant {
+    position: Position,
+    /// seconds since midnight
+    time: u32,
+    date: Date,
+}
+
+#[derive(Serialize, Deserialize)]
 struct SpatialGrid {
     /// <(lat_index, lon_index), list of stop_ids>
     map: HashMap<(i32, i32), Vec<u32>>,
@@ -90,21 +108,14 @@ impl SpatialGrid {
     }
 }
 
-struct DepartInstant {
-    position: Position,
-    /// seconds since midnight
-    time: u32,
-    date: Date,
-}
-
 /// represents a position on the earth (latitude, longitude)
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 struct Position {
     lat: f64,
     lon: f64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 struct Stop {
     stop_id: u32,
     // name: String,
@@ -123,6 +134,7 @@ Transit type (route_type in routes.txt) values:
  - 7 : Funicular. Any rail system designed for steep inclines.
  - 11: Trolleybus. Electric buses that draw power from overhead wires using poles.
  - 12: Monorail. Railway in which the track consists of a single rail or a beam.*/
+#[derive(Serialize, Deserialize)]
 enum RouteType {
     TRAM,
     SUBWAY,
@@ -135,12 +147,14 @@ enum RouteType {
     TROLLEYBUS,
     MONORAIL,
 }
+#[derive(Serialize, Deserialize)]
 struct Route {
     route_id: u32,
     route_type: RouteType,
     name: String,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Trip {
     trip_id: u32,
     route_id: u32,
@@ -148,6 +162,7 @@ struct Trip {
     stop_times: Vec<StopTime>, // TODO: fix the duplication of stop_times (its A LOT of data)
 }
 
+#[derive(Serialize, Deserialize)]
 struct StopTime {
     trip_id: u32,
     stop_sequence: u16,
@@ -158,13 +173,14 @@ struct StopTime {
     departure_time: u32,
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Serialize, Deserialize)]
 struct Date {
     year: u32,
     month: u8,
     day: u8,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Transfer {
     from_stop_id: u32,
     to_stop_id: u32,
@@ -172,7 +188,7 @@ struct Transfer {
     min_transfer_time: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 struct Connection {
     from_stop_id: u32,
     to_stop_id: u32,
@@ -184,12 +200,13 @@ struct Connection {
     departure_time: u32,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Serialize, Deserialize)]
 enum ServiceExceptionType {
     SERVICE_ADDED,
     SERVICE_REMOVED,
 }
 
+#[derive(Serialize, Deserialize)]
 struct GTFSData {
     /// <stop_id, Stop>
     stops: HashMap<u32, Stop>,
@@ -209,7 +226,27 @@ struct GTFSData {
 
 fn main() {
     let now = Instant::now();
-    let gtfs_data = initialize_data().unwrap();
+
+    // Loading gtfs data
+    let gtfs_data = match load_gtfs_data("cache/gtfs_data") {
+        // try loading from cache if possible
+        Ok(data) => data,
+        Err(_) => {
+            // if couldnt load gtfs data from cache, parse from gtfs files
+            let data = match initialize_data() {
+                Ok(data) => data,
+                Err(err) => panic!("error parsing gtfs data: {:?}", err),
+            };
+
+            // save that parsed data into the cache
+            match save_gtfs_data(&data, format!("{CACHE_DIRECTORY}{}", "gtfs_data").as_str()) {
+                Ok(()) => (),
+                Err(err) => panic!("error saving gtfs data: {:?}", err),
+            };
+
+            data // return that data
+        }
+    };
     println!("Initializing: {}ms", now.elapsed().as_millis());
 
     let now = Instant::now();
@@ -221,12 +258,16 @@ fn main() {
         seconds_to_str_time(&DEPART_INSTANT.time)
     );
     let now = Instant::now();
-    generate_heatmap(&gtfs_data, &travel_times, "heatmap.png");
+    generate_heatmap(
+        &gtfs_data,
+        &travel_times,
+        format!("{OUTPUT_DIRECTORY}{}", "heatmap.png").as_str(),
+    );
     println!("Heatmap: {}ms", now.elapsed().as_millis());
     println!("Heatmap saved to heatmap.png");
-    shader::run().block_on();
 }
 
+// TODO: switch all latitudes and longitudes to use radians (for consistency)
 // TODO: make the data smaller where possible (removing unimportant data, maybe making a separate database not in-memory)
 /// reads the gtfs data from the gtfs files and puts them into a GTFSData struct instance
 fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
@@ -241,7 +282,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     };
 
     // stops
-    let file = File::open("./src/lib/gtfs-nl/stops.txt")?;
+    let file = File::open(format!("{GTFS_DIRECTORY}{}", "stops.txt"))?;
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
@@ -265,7 +306,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     println!("Loaded {} stops", gtfs_data.stops.len());
 
     // routes
-    let file = File::open("./src/lib/gtfs-nl/routes.txt")?;
+    let file = File::open(format!("{GTFS_DIRECTORY}{}", "routes.txt"))?;
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
@@ -283,7 +324,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     println!("Loaded {} routes", gtfs_data.routes.len());
 
     // trips
-    let file = File::open("./src/lib/gtfs-nl/trips.txt")?;
+    let file = File::open(format!("{GTFS_DIRECTORY}{}", "trips.txt"))?;
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
@@ -302,7 +343,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     println!("Loaded {} trips", gtfs_data.trips.len());
 
     // stop_times
-    let file = File::open("./src/lib/gtfs-nl/stop_times.txt")?;
+    let file = File::open(format!("{GTFS_DIRECTORY}{}", "stop_times.txt"))?;
     let mut reader = Reader::from_reader(file);
     let mut stop_times_count: u32 = 0;
     for result in reader.records() {
@@ -325,7 +366,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     println!("Loaded {} stop_times", stop_times_count);
 
     // services (from calendar_dates)
-    let file = File::open("./src/lib/gtfs-nl/calendar_dates.txt")?;
+    let file = File::open(format!("{GTFS_DIRECTORY}{}", "calendar_dates.txt"))?;
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
@@ -340,7 +381,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     println!("Loaded {} services", gtfs_data.services.len());
 
     // transfers
-    let file = File::open("./src/lib/gtfs-nl/transfers.txt")?;
+    let file = File::open(format!("{GTFS_DIRECTORY}{}", "transfers.txt"))?;
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
@@ -509,14 +550,11 @@ fn initialize_dijkstra(
 /// generates an image displaying the time it takes to get from the starting position to any other position (within the heatmap) as a color gradient
 /// uses the parsed gtfs data and the travel times from the dijkstra algorithm
 fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output_path: &str) {
-    let (min_lat, max_lat, min_lon, max_lon) =
-        (BBOX_MIN_LAT, BBOX_MAX_LAT, BBOX_MIN_LON, BBOX_MAX_LON);
-
     // derive image dimensions from the bounding box aspect ratio
     // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
-    let mid_lat = (min_lat + max_lat) / 2.0;
-    let physical_width = (max_lon - min_lon) * mid_lat.to_radians().cos();
-    let physical_height = max_lat - min_lat;
+    let mid_lat = (BBOX_MIN.lat + BBOX_MAX.lat) / 2.0;
+    let physical_width = (BBOX_MAX.lon - BBOX_MIN.lon) * mid_lat.to_radians().cos();
+    let physical_height = BBOX_MAX.lat - BBOX_MIN.lat;
     let aspect_ratio = physical_width / physical_height;
     let (width, height) = if aspect_ratio >= 1.0 {
         (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
@@ -528,60 +566,72 @@ fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, out
     println!("height: {}", height);
     println!("aspect: {}\n", aspect_ratio);
 
-    let mut pixel_arrival_time_map: HashMap<(u32, u32), u32> = HashMap::new(); // <(px, py), arrival_time>
-
-    // finding travel times for each pixel, storing in a map
-    let mut max_time: u32 = 0; // stores the latest pixel arrival_time found
-
-    for py in 0..height {
-        for px in 0..width {
-            // map pixel to lat/lon
-            let lat = max_lat - (py as f64 / height as f64) * (max_lat - min_lat); // flip y axis
-            let lon = min_lon + (px as f64 / width as f64) * (max_lon - min_lon);
-
-            let pixel_pos = Position { lat, lon };
-
-            // find best stop
-            let nearby_stops = gtfs_data.grid.get_nearby(pixel_pos);
-            let best_stop_id = nearby_stops.iter().min_by(|a, b| {
-                // sort stops based on stop arrival time + walk time to pixel_pos from stop
-                let stop_a = gtfs_data.stops.get(a).unwrap();
-                let stop_b = gtfs_data.stops.get(b).unwrap();
-                let da = get_walk_time(pixel_pos, stop_a.position);
-                // + arrival_times.get(&stop_a.stop_id).unwrap();
-                let db = get_walk_time(pixel_pos, stop_b.position);
-                // + arrival_times.get(&stop_b.stop_id).unwrap();
-                da.partial_cmp(&db).unwrap()
-            });
-
-            match best_stop_id.and_then(|stop_id| arrival_times.get(stop_id)) {
-                Some(&arrival_time) => {
-                    max_time = max_time.max(arrival_time);
-                    pixel_arrival_time_map.insert(
-                        (px, py),
-                        arrival_time
-                            + get_walk_time(
-                                pixel_pos,
-                                gtfs_data.stops.get(best_stop_id.unwrap()).unwrap().position,
-                            ),
-                    );
-                }
-                None => (),
-            };
-        }
+    // TODO: switch to just storing the latitude and longitude of the stops. make the shader do the conversion for more flexibility
+    let mut stop_positions: Vec<[f32; 2]> = Vec::new();
+    for stop in gtfs_data.stops.values() {
+        let thingy = [
+            ((stop.position.lat - BBOX_MIN.lat) / (BBOX_MAX.lat - BBOX_MIN.lat)) as f32,
+            1.0 - ((stop.position.lon - BBOX_MIN.lon) / (BBOX_MAX.lon - BBOX_MIN.lon)) as f32,
+        ];
+        stop_positions.push(thingy);
     }
 
-    // generating image from values stored in map
-    let mut img = ImageBuffer::new(width, height);
-    for ((px, py), arrival_time) in pixel_arrival_time_map {
-        let t = (arrival_time.saturating_sub(DEPART_INSTANT.time) as f64)
-            / (max_time - DEPART_INSTANT.time) as f64;
-        let color = travel_time_to_color(t.clamp(0.0, 1.0));
+    shader::run(&stop_positions, width, height, output_path).block_on();
 
-        img.put_pixel(px, py, color);
-    }
+    // let mut pixel_arrival_time_map: HashMap<(u32, u32), u32> = HashMap::new(); // <(px, py), arrival_time>
 
-    img.save(output_path).unwrap(); // create the image file
+    // // finding travel times for each pixel, storing in a map
+    // let mut max_time: u32 = 0; // stores the latest pixel arrival_time found
+
+    // for py in 0..height {
+    //     for px in 0..width {
+    //         // map pixel to lat/lon
+    //         let lat = max_lat - (py as f64 / height as f64) * (max_lat - min_lat); // flip y axis
+    //         let lon = min_lon + (px as f64 / width as f64) * (max_lon - min_lon);
+
+    //         let pixel_pos = Position { lat, lon };
+
+    //         // find best stop
+    //         let nearby_stops = gtfs_data.grid.get_nearby(pixel_pos);
+    //         let best_stop_id = nearby_stops.iter().min_by(|a, b| {
+    //             // sort stops based on stop arrival time + walk time to pixel_pos from stop
+    //             let stop_a = gtfs_data.stops.get(a).unwrap();
+    //             let stop_b = gtfs_data.stops.get(b).unwrap();
+    //             let da = get_walk_time(pixel_pos, stop_a.position);
+    //             // + arrival_times.get(&stop_a.stop_id).unwrap();
+    //             let db = get_walk_time(pixel_pos, stop_b.position);
+    //             // + arrival_times.get(&stop_b.stop_id).unwrap();
+    //             da.partial_cmp(&db).unwrap()
+    //         });
+
+    //         match best_stop_id.and_then(|stop_id| arrival_times.get(stop_id)) {
+    //             Some(&arrival_time) => {
+    //                 max_time = max_time.max(arrival_time);
+    //                 pixel_arrival_time_map.insert(
+    //                     (px, py),
+    //                     arrival_time
+    //                         + get_walk_time(
+    //                             pixel_pos,
+    //                             gtfs_data.stops.get(best_stop_id.unwrap()).unwrap().position,
+    //                         ),
+    //                 );
+    //             }
+    //             None => (),
+    //         };
+    //     }
+    // }
+
+    // // generating image from values stored in map
+    // let mut img = ImageBuffer::new(width, height);
+    // for ((px, py), arrival_time) in pixel_arrival_time_map {
+    //     let t = (arrival_time.saturating_sub(DEPART_INSTANT.time) as f64)
+    //         / (max_time - DEPART_INSTANT.time) as f64;
+    //     let color = travel_time_to_color(t.clamp(0.0, 1.0));
+
+    //     img.put_pixel(px, py, color);
+    // }
+
+    // img.save(output_path).unwrap(); // create the image file
 }
 
 /// Maps a normalized travel time (0.0 = fastest, 1.0 = slowest) to a color.
@@ -724,4 +774,20 @@ fn haversine_distance(position_a: Position, position_b: Position) -> f64 {
     let c: f64 = 2.0 * (a.sqrt()).asin();
 
     return EARTH_RADIUS_METER * c;
+}
+
+fn save_gtfs_data(data: &GTFSData, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = postcard::to_allocvec(data)?;
+    let mut file = File::create(path)?;
+    file.write_all(&bytes)?;
+    Ok(())
+}
+
+fn load_gtfs_data(path: &str) -> Result<GTFSData, Box<dyn std::error::Error>> {
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let data = postcard::from_bytes(&buffer)?;
+
+    Ok(data)
 }
