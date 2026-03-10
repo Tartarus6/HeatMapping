@@ -1,5 +1,5 @@
 use csv::Reader;
-use image::{ImageBuffer, Rgb};
+// use image::{ImageBuffer, Rgb};
 use pollster::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
@@ -202,8 +202,8 @@ struct Connection {
 
 #[derive(PartialEq, Serialize, Deserialize)]
 enum ServiceExceptionType {
-    SERVICE_ADDED,
-    SERVICE_REMOVED,
+    ServiceAdded,
+    ServiceRemoved,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -566,14 +566,9 @@ fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, out
     println!("height: {}", height);
     println!("aspect: {}\n", aspect_ratio);
 
-    // TODO: switch to just storing the latitude and longitude of the stops. make the shader do the conversion for more flexibility
     let mut stop_positions: Vec<[f32; 2]> = Vec::new();
     for stop in gtfs_data.stops.values() {
-        let thingy = [
-            ((stop.position.lat - BBOX_MIN.lat) / (BBOX_MAX.lat - BBOX_MIN.lat)) as f32,
-            1.0 - ((stop.position.lon - BBOX_MIN.lon) / (BBOX_MAX.lon - BBOX_MIN.lon)) as f32,
-        ];
-        stop_positions.push(thingy);
+        stop_positions.push([stop.position.lat as f32, stop.position.lon as f32]);
     }
 
     shader::run(&stop_positions, width, height, output_path).block_on();
@@ -636,11 +631,11 @@ fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, out
 
 /// Maps a normalized travel time (0.0 = fastest, 1.0 = slowest) to a color.
 /// white -> black
-fn travel_time_to_color(t: f64) -> Rgb<u8> {
-    // white to black
-    let s = ((1.0 - t) * 255.0) as u8;
-    Rgb([s, s, s])
-}
+// fn travel_time_to_color(t: f64) -> Rgb<u8> {
+//     // white to black
+//     let s = ((1.0 - t) * 255.0) as u8;
+//     Rgb([s, s, s])
+// }
 
 // TODO: switch to using binary search instead of iterating through until it's found
 // TODO: add ability to ignore certain transport types (i.e. only no-busses routes)
@@ -672,10 +667,10 @@ fn get_culled_connections(
                     gtfs_data.trips.get(&connection.trip_id).unwrap().service_id,
                     DEPART_INSTANT.date,
                 ))
-                .unwrap_or(&ServiceExceptionType::SERVICE_REMOVED);
+                .unwrap_or(&ServiceExceptionType::ServiceRemoved);
 
             // if connection not in service today, skip it
-            if *service_exception_type != ServiceExceptionType::SERVICE_ADDED {
+            if *service_exception_type != ServiceExceptionType::ServiceAdded {
                 continue;
             }
 
@@ -740,9 +735,9 @@ fn parse_route_type(route_type: u32) -> RouteType {
 /// converts exception_type integer to ServiceExceptionType enum
 fn parse_exception_type(exception_type: u32) -> ServiceExceptionType {
     match exception_type {
-        1 => ServiceExceptionType::SERVICE_ADDED,
-        2 => ServiceExceptionType::SERVICE_REMOVED,
-        _ => ServiceExceptionType::SERVICE_REMOVED,
+        1 => ServiceExceptionType::ServiceAdded,
+        2 => ServiceExceptionType::ServiceRemoved,
+        _ => ServiceExceptionType::ServiceRemoved,
     }
 }
 

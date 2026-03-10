@@ -43,7 +43,12 @@ pub async fn run(
 
     let bounding_box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Bounding Box Buffer"),
-        contents: bytemuck::cast_slice(&[BBOX_MIN.lat, BBOX_MIN.lon, BBOX_MAX.lat, BBOX_MAX.lon]),
+        contents: bytemuck::cast_slice(&[
+            BBOX_MIN.lat as f32,
+            BBOX_MIN.lon as f32,
+            BBOX_MAX.lat as f32,
+            BBOX_MAX.lon as f32,
+        ]),
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
