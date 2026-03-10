@@ -38,10 +38,9 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
 /// gets distance in meters between 2 positions
 const EARTH_RADIUS_METER: f32 = 6371000.0;
 const PI: f32 = 3.14159265359;
-const DEG_TO_RAD_MULT = PI / 180.0;
 fn haversine_distance(position_a: vec2<f32>, position_b: vec2<f32>) -> f32 {
-    let rad_a = position_a * DEG_TO_RAD_MULT;
-    let rad_b = position_b * DEG_TO_RAD_MULT;
+    let rad_a = position_a;
+    let rad_b = position_b;
 
     let phi_1: f32 = rad_a.x;
     let phi_2: f32 = rad_b.x;

@@ -20,19 +20,19 @@ const MAX_WALK_TRANSFER_DISTANCE: f64 = 500.0;
 
 // bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MIN: Position = Position {
-    lat: 52.132003,
-    lon: 4.607175,
+    lat: 0.909875098007,
+    lon: 0.080410372965,
 };
 const BBOX_MAX: Position = Position {
-    lat: 52.405422,
-    lon: 5.047558,
+    lat: 0.914647159795,
+    lon: 0.088096506285,
 };
 
 /// constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
     position: Position {
-        lat: 52.368262,
-        lon: 4.904503,
+        lat: 0.913998595445,
+        lon: 0.085599725524,
     },
     time: 32400, // 09:00:00
     date: Date {
@@ -64,7 +64,7 @@ impl SpatialGrid {
     fn new(cell_size_meters: f64) -> Self {
         Self {
             map: HashMap::new(),
-            cell_size: cell_size_meters / 111_320.0, // convert meters to degrees (further handling is needed for latitude)
+            cell_size: cell_size_meters / 6_371_000.0, // convert radians to meters (further handling is needed for latitude)
         }
     }
 
@@ -86,7 +86,7 @@ impl SpatialGrid {
         // At a given latitude, longitude degrees are smaller in physical size.
         // We need to search more longitude cells to cover the same physical distance.
         // cos(lat) gives the ratio of longitude degree size to latitude degree size.
-        let lon_scale = position.lat.to_radians().cos().max(1e-10); // clamp to avoid divide by zero
+        let lon_scale = position.lat.cos().max(1e-10); // clamp to avoid divide by zero
         // How many longitude cells fit in one latitude cell's worth of physical distance.
         // Add 1 to be safe at cell boundaries.
         // Also clamp to half the total longitude cells in a full 360° circle at this latitude,
@@ -111,7 +111,9 @@ impl SpatialGrid {
 /// represents a position on the earth (latitude, longitude)
 #[derive(Clone, Copy, Serialize, Deserialize)]
 struct Position {
+    /// latitude in radians
     lat: f64,
+    /// longitude in radians
     lon: f64,
 }
 
@@ -288,8 +290,8 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         let record = result?;
         let stop_id = parse_stop_id(&record[0]);
         let position = Position {
-            lat: record[3].parse().unwrap(),
-            lon: record[4].parse().unwrap(),
+            lat: record[3].parse::<f64>()?.to_radians(),
+            lon: record[4].parse::<f64>()?.to_radians(),
         };
 
         gtfs_data.stops.insert(
@@ -553,7 +555,7 @@ fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, out
     // derive image dimensions from the bounding box aspect ratio
     // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
     let mid_lat = (BBOX_MIN.lat + BBOX_MAX.lat) / 2.0;
-    let physical_width = (BBOX_MAX.lon - BBOX_MIN.lon) * mid_lat.to_radians().cos();
+    let physical_width = (BBOX_MAX.lon - BBOX_MIN.lon) * mid_lat.cos();
     let physical_height = BBOX_MAX.lat - BBOX_MIN.lat;
     let aspect_ratio = physical_width / physical_height;
     let (width, height) = if aspect_ratio >= 1.0 {
@@ -759,10 +761,10 @@ fn get_walk_time(from_position: Position, to_position: Position) -> u32 {
 /// gets distance in meters between 2 positions
 const EARTH_RADIUS_METER: f64 = 6371000.0;
 fn haversine_distance(position_a: Position, position_b: Position) -> f64 {
-    let φ1: f64 = position_a.lat.to_radians();
-    let φ2: f64 = position_b.lat.to_radians();
-    let δφ: f64 = (position_b.lat - position_a.lat).to_radians();
-    let δλ: f64 = (position_b.lon - position_a.lon).to_radians();
+    let φ1: f64 = position_a.lat;
+    let φ2: f64 = position_b.lat;
+    let δφ: f64 = position_b.lat - position_a.lat;
+    let δλ: f64 = position_b.lon - position_a.lon;
 
     let a: f64 = (δφ / 2.0).sin() * (δφ / 2.0).sin()
         + φ1.cos() * φ2.cos() * (δλ / 2.0).sin() * (δλ / 2.0).sin();
