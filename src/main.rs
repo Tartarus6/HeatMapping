@@ -234,6 +234,8 @@ fn main() {
         // try loading from cache if possible
         Ok(data) => data,
         Err(_) => {
+            println!("Cache not found - parsing GTFS data...");
+
             // if couldnt load gtfs data from cache, parse from gtfs files
             let data = match initialize_data() {
                 Ok(data) => data,
@@ -252,7 +254,7 @@ fn main() {
     println!("Initializing: {}ms", now.elapsed().as_millis());
 
     let now = Instant::now();
-    let travel_times = initialize_dijkstra(&gtfs_data).unwrap();
+    let arrival_times = initialize_dijkstra(&gtfs_data).unwrap();
     println!("Dijkstra: {}ms", now.elapsed().as_millis());
 
     println!(
@@ -260,11 +262,17 @@ fn main() {
         seconds_to_str_time(&DEPART_INSTANT.time)
     );
     let now = Instant::now();
-    generate_heatmap(
+    // generate_heatmap(
+    //     &gtfs_data,
+    //     &travel_times,
+    //     format!("{OUTPUT_DIRECTORY}{}", "heatmap.png").as_str(),
+    // );
+    shader::run(
         &gtfs_data,
-        &travel_times,
+        &arrival_times,
         format!("{OUTPUT_DIRECTORY}{}", "heatmap.png").as_str(),
-    );
+    )
+    .block_on();
     println!("Heatmap: {}ms", now.elapsed().as_millis());
     println!("Heatmap saved to heatmap.png");
 }
@@ -552,44 +560,36 @@ fn initialize_dijkstra(
 /// generates an image displaying the time it takes to get from the starting position to any other position (within the heatmap) as a color gradient
 /// uses the parsed gtfs data and the travel times from the dijkstra algorithm
 fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output_path: &str) {
-    // derive image dimensions from the bounding box aspect ratio
-    // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
-    let mid_lat = (BBOX_MIN.lat + BBOX_MAX.lat) / 2.0;
-    let physical_width = (BBOX_MAX.lon - BBOX_MIN.lon) * mid_lat.cos();
-    let physical_height = BBOX_MAX.lat - BBOX_MIN.lat;
-    let aspect_ratio = physical_width / physical_height;
-    let (width, height) = if aspect_ratio >= 1.0 {
-        (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
-    } else {
-        ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
-    };
+    // // derive image dimensions from the bounding box aspect ratio
+    // // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
+    // let mid_lat = (BBOX_MIN.lat + BBOX_MAX.lat) / 2.0;
+    // let physical_width = (BBOX_MAX.lon - BBOX_MIN.lon) * mid_lat.cos();
+    // let physical_height = BBOX_MAX.lat - BBOX_MIN.lat;
+    // let aspect_ratio = physical_width / physical_height;
+    // let (width, height) = if aspect_ratio >= 1.0 {
+    //     (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
+    // } else {
+    //     ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
+    // };
 
-    println!("width : {}", width);
-    println!("height: {}", height);
-    println!("aspect: {}\n", aspect_ratio);
+    // println!("width : {}", width);
+    // println!("height: {}", height);
+    // println!("aspect: {}\n", aspect_ratio);
 
-    let mut stop_positions: Vec<[f32; 3]> = Vec::new();
-    for stop in gtfs_data.stops.values() {
-        if let Some(&arrival_time) = arrival_times.get(&stop.stop_id) {
-            stop_positions.push([
-                stop.position.lat as f32,
-                stop.position.lon as f32,
-                arrival_time as f32,
-            ]);
-        }
-    }
+    // let mut stop_positions: Vec<[f32; 3]> = Vec::new();
+    // for stop in gtfs_data.stops.values() {
+    //     if let Some(&arrival_time) = arrival_times.get(&stop.stop_id) {
+    //         stop_positions.push([
+    //             stop.position.lat as f32,
+    //             stop.position.lon as f32,
+    //             arrival_time as f32,
+    //         ]);
+    //     }
+    // }
     //TODO FIX THIS SHIT for an actual real max time
     //let max_time = arrival_times.values().max().unwrap() + 1800; this is actual max time ,
 
-    shader::run(
-        &stop_positions,
-        width,
-        height,
-        DEPART_INSTANT.time,
-        DEPART_INSTANT.time + 3600, // shitty hack to make it display SOMETHING
-        output_path,
-    )
-    .block_on();
+    // shader::run(&gtfs_data, &arrival_times, output_path).block_on();
 
     // let mut pixel_arrival_time_map: HashMap<(u32, u32), u32> = HashMap::new(); // <(px, py), arrival_time>
 

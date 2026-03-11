@@ -1,16 +1,44 @@
-use crate::{BBOX_MAX, BBOX_MIN};
+use std::collections::HashMap;
+
+use crate::{BBOX_MAX, BBOX_MIN, DEPART_INSTANT, GTFSData, MAX_DIM};
 
 use wgpu::{BufferUsages, util::DeviceExt};
 
+// TODO: switch to giving shader some kinda spatial grid rather than having it iterate through all stops for every pixel
+// TODO: switch to a multi-stage aproach that first calculates the arrival time to each pixel, then turns that into a heatmap
 /// stop_positions: (latitude, longitude)
-pub async fn run(
-    stop_positions: &Vec<[f32; 3]>,
-    pixels_width: u32,
-    pixels_height: u32,
-    begin_time: u32,
-    max_time: u32,
-    output_path: &str,
-) {
+pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output_path: &str) {
+    // derive image dimensions from the bounding box aspect ratio
+    // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
+    let mid_lat = (BBOX_MIN.lat + BBOX_MAX.lat) / 2.0;
+    let physical_width = (BBOX_MAX.lon - BBOX_MIN.lon) * mid_lat.cos();
+    let physical_height = BBOX_MAX.lat - BBOX_MIN.lat;
+    let aspect_ratio = physical_width / physical_height;
+    let (pixels_width, pixels_height) = if aspect_ratio >= 1.0 {
+        (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
+    } else {
+        ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
+    };
+
+    println!("pixels_width : {}", pixels_width);
+    println!("pixels_height: {}", pixels_height);
+    println!("aspect: {}\n", aspect_ratio);
+
+    let mut stop_positions: Vec<[f32; 3]> = Vec::new();
+    for stop in gtfs_data.stops.values() {
+        if let Some(&arrival_time) = arrival_times.get(&stop.stop_id) {
+            stop_positions.push([
+                stop.position.lat as f32,
+                stop.position.lon as f32,
+                arrival_time as f32,
+            ]);
+        }
+    }
+
+    // TODO: replace max_time with actual processing stage to calculate it
+    let begin_time = DEPART_INSTANT.time;
+    let max_time = DEPART_INSTANT.time + 3600; // shitty hack to make it display SOMETHING
+
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         ..Default::default()
@@ -25,12 +53,6 @@ pub async fn run(
         .unwrap();
     let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
 
-    // TODO: is this right?
-    // let stop_position_pixels_bytes: Vec<u8> = stop_position_pixels
-    //     .iter()
-    //     .flat_map(|(x, y)| [x.to_le_bytes(), y.to_le_bytes()])
-    //     .flatten()
-    //     .collect::<Vec<u8>>();
     let stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Stops Buffer"),
         contents: bytemuck::cast_slice(&stop_positions),
