@@ -1,12 +1,14 @@
-use wgpu::{BufferUsages, util::DeviceExt};
-
 use crate::{BBOX_MAX, BBOX_MIN};
+
+use wgpu::{BufferUsages, util::DeviceExt};
 
 /// stop_positions: (latitude, longitude)
 pub async fn run(
-    stop_positions: &Vec<[f32; 2]>,
+    stop_positions: &Vec<[f32; 3]>,
     pixels_width: u32,
     pixels_height: u32,
+    begin_time: u32,
+    max_time: u32,
     output_path: &str,
 ) {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -49,6 +51,12 @@ pub async fn run(
             BBOX_MAX.lat as f32,
             BBOX_MAX.lon as f32,
         ]),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+
+    let start_max_times_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Times Buffer"),
+        contents: bytemuck::cast_slice(&[begin_time as f32, max_time as f32]),
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
@@ -126,6 +134,16 @@ pub async fn run(
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -148,6 +166,10 @@ pub async fn run(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: bounding_box_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: start_max_times_buffer.as_entire_binding(),
             },
         ],
     });

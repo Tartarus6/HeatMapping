@@ -568,12 +568,28 @@ fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, out
     println!("height: {}", height);
     println!("aspect: {}\n", aspect_ratio);
 
-    let mut stop_positions: Vec<[f32; 2]> = Vec::new();
+    let mut stop_positions: Vec<[f32; 3]> = Vec::new();
     for stop in gtfs_data.stops.values() {
-        stop_positions.push([stop.position.lat as f32, stop.position.lon as f32]);
+        if let Some(&arrival_time) = arrival_times.get(&stop.stop_id) {
+            stop_positions.push([
+                stop.position.lat as f32,
+                stop.position.lon as f32,
+                arrival_time as f32,
+            ]);
+        }
     }
+    //TODO FIX THIS SHIT for an actual real max time
+    //let max_time = arrival_times.values().max().unwrap() + 1800; this is actual max time ,
 
-    shader::run(&stop_positions, width, height, output_path).block_on();
+    shader::run(
+        &stop_positions,
+        width,
+        height,
+        DEPART_INSTANT.time,
+        DEPART_INSTANT.time + 3600, // shitty hack to make it display SOMETHING
+        output_path,
+    )
+    .block_on();
 
     // let mut pixel_arrival_time_map: HashMap<(u32, u32), u32> = HashMap::new(); // <(px, py), arrival_time>
 
