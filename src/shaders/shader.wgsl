@@ -27,14 +27,16 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
     var position = (vec2(uv.x, 1.0 - uv.y) * (bounding_box_max - bounding_box_min)) + bounding_box_min;
 
     var min_time:f32 = 1e9;
+
     for (var i = 0u; i < arrayLength(&stops); i++) { // for each stop
         var current_time:f32 = get_walk_time(stops[i].xy,position) + stops[i].z;
         if (current_time < min_time) {
             min_time = current_time ;
         }
+
     }
 
-    let t = clamp((min_time - start_max_times.x) / (start_max_times.y - start_max_times.x),0.0,1.0);// the x value is the begin tine and the y is the max time
+    let t = clamp((min_time - start_max_times.x) / ( start_max_times.y  - start_max_times.x),0.0,1.0);// the x value is the begin tine and the y is the max time
 
     return travel_time_to_color(t);
 }
@@ -67,8 +69,27 @@ fn get_walk_time(from_position: vec2<f32>,to_position:vec2<f32>)->f32{
 
 fn travel_time_to_color(time:f32)->vec4<f32>{
     let scale = (time);
-    return vec4(oklab_to_rgb(vec3(0.5,1-scale, scale)),1);
+    let red    = vec3(0.55,  0.2,   0.15);  //fastest
+    let orange = vec3(0.65,  0.1,  0.5);
+    let yellow = vec3(0.85,  0.00,  0.18);
+    let green  = vec3(0.72, -0.18,  0.08);
+    let blue   = vec3(0.55, -0.05, -0.2);
+    let purple = vec3(0.4,   0.15, -0.2);   //slowest
 
+    var oklab: vec3<f32>;
+    if scale < 0.20 {
+        oklab = mix(red, orange, scale / 0.20);
+    } else if scale < 0.40 {
+        oklab = mix(orange, yellow, (scale - 0.20) / 0.20);
+    } else if scale < 0.60 {
+        oklab = mix(yellow, green, (scale - 0.40) / 0.20);
+    } else if scale < 0.80{
+        oklab = mix(green, blue, (scale - 0.60) / 0.20);
+    } else {
+        oklab = mix(blue, purple, (scale - 0.80) / 0.20);
+    }
+
+    return vec4(oklab_to_rgb(oklab), 1.0);
 }
 
 
@@ -81,15 +102,15 @@ fn oklab_to_rgb(oklab:vec3<f32>)->vec3<f32>{
     var r = l * 4.0767416621 + m * -3.3077115913 + s * 0.2309699292;
     var g = l * -1.2684380046 + m * 2.6097574011 + s * -0.3413193965;
     var b = l * -0.0041960863 + m * -0.7034186147 + s * 1.7076147010;
-    r = 255 * linear_to_gamma(r); g = 255 * linear_to_gamma(g); b = 255 * linear_to_gamma(b);
-    r = clamp(r,0,255); g = clamp(g, 0,255); b = clamp(b, 0, 255);
+    r =  linear_to_gamma(r); g = linear_to_gamma(g); b =  linear_to_gamma(b);
+    r = clamp(r,0.0,1.0); g = clamp(g, 0.0,1.0); b = clamp(b, 0, 1.0);
     return vec3(r,g,b);
 }
 
 
 fn linear_to_gamma(c:f32)-> f32{
     if (c >= 0.0031308){
-        return 1.055 * pow(c,1/2.4) - 0.055;
+        return 1.055 * pow(c,1.0/2.4) - 0.055;
     }else{
         return 12.92 * c;
     }
