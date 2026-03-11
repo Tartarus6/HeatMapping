@@ -4,10 +4,32 @@ const positions: array<vec2<f32>, 3> = array(
     vec2(-1.0, 3.0),
 ); // oversized triangle to cover full viewport after clipping
 
-@group(0) @binding(0) var<storage, read> stops: array<vec3<f32>>;
-@group(0) @binding(1) var<uniform> dimensions: vec2<f32>;
-@group(0) @binding(2) var<uniform> bounding_box: vec4<f32>;
-@group(0) @binding(3) var<uniform> start_max_times: vec2<f32>;
+struct GpuGridCell {
+    lat_index: i32,
+    lon_index: i32,
+    start: u32,
+    count: u32,
+}
+
+struct ShaderConfig {
+    width: f32,  // how many pixels wide the image is
+    height: f32, // how many pixels tall the image is
+    bbox_min_lat: f32,
+    bbox_min_lon: f32,
+    bbox_max_lat: f32,
+    bbox_max_lon: f32,
+    gpu_grid_cell_size: f32, // size of each cell (in radians)
+    begin_time: f32,         // departure time in seconds since midnight
+    // TODO: fix max time
+    max_time: f32, // latest arrival time in seconds since midnight
+}
+
+// @group(0) @binding(0) var<storage, read> stops: array<vec3<f32>>;
+@group(0) @binding(0) var<storage, read> grid_cells: array<GpuGridCell>;
+@group(0) @binding(1) var<storage, read> grid_stops: array<vec3<f32>>;
+@group(0) @binding(2) var<uniform> config: ShaderConfig;
+// @group(0) @binding(3) var<uniform> bounding_box: vec4<f32>;
+// @group(0) @binding(4) var<uniform> start_max_times: vec2<f32>;
 struct VsOut {
     @builtin(position) frag_position: vec4<f32>,
 }
@@ -19,22 +41,39 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
 
 @fragment
 fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
-    var bounding_box_min = bounding_box.xy; // first 2 elements of bounding_box are min_lat and min_lon
-    var bounding_box_max = bounding_box.zw; // last  2 elements of bounding_box are max_lat and max_lon
+    var bounding_box_min = vec2(config.bbox_min_lat, config.bbox_min_lon);
+    var bounding_box_max = vec2(config.bbox_max_lat, config.bbox_max_lon);
 
-    var uv = (vs.frag_position.xy / dimensions);
+    var uv = (vs.frag_position.xy / vec2(config.width, config.height));
 
-    var position = (vec2(uv.x, 1.0 - uv.y) * (bounding_box_max - bounding_box_min)) + bounding_box_min;
+    var pixel_position = (vec2(uv.x, 1.0 - uv.y) * (bounding_box_max - bounding_box_min)) + bounding_box_min;
 
-    var min_time:f32 = 1e9;
-    for (var i = 0u; i < arrayLength(&stops); i++) { // for each stop
-        var current_time:f32 = get_walk_time(stops[i].xy,position) + stops[i].z;
-        if (current_time < min_time) {
-            min_time = current_time ;
+    // TODO: is the floor() needed here (i just want to make sure that the i32 casting doesnt sometimes round or ciel or something)
+    var pixel_grid_lat_index: i32 = i32(floor(pixel_position.x / config.gpu_grid_cell_size));
+    var pixel_grid_lon_index: i32 = i32(floor(pixel_position.y / config.gpu_grid_cell_size));
+
+    var min_time: f32 = config.max_time; // initialize fastest arrival time to the maximum
+
+    for (var i = 0u; i < arrayLength(&grid_cells); i++) { // for each cell
+        // if cell is neighboring (or same index)
+        if ((1 <= grid_cells[i].lat_index - pixel_grid_lat_index || grid_cells[i].lat_index - pixel_grid_lat_index <= 1) && (1 <= grid_cells[i].lon_index - pixel_grid_lon_index || grid_cells[i].lon_index - pixel_grid_lon_index <= 1)) {
+            for (var j = grid_cells[i].start; j < grid_cells[i].start + grid_cells[i].count; j++) {
+                var current_time: f32 = get_walk_time(grid_stops[j].xy, pixel_position) + grid_stops[j].z;
+                if (current_time < min_time) {
+                    min_time = current_time ;
+                }
+            }
         }
     }
 
-    let t = clamp((min_time - start_max_times.x) / (start_max_times.y - start_max_times.x),0.0,1.0);// the x value is the begin tine and the y is the max time
+    // for (var i = 0u; i < arrayLength(&stops); i++) { // for each stop
+    //     var current_time:f32 = get_walk_time(stops[i].xy,pixel_position) + stops[i].z;
+    //     if (current_time < min_time) {
+    //         min_time = current_time ;
+    //     }
+    // }
+
+    let t = clamp((min_time - config.begin_time) / (config.max_time - config.begin_time),0.0,1.0);// the x value is the begin tine and the y is the max time
 
     return travel_time_to_color(t);
 }

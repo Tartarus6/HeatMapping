@@ -1,13 +1,37 @@
 use std::collections::HashMap;
 
-use crate::{BBOX_MAX, BBOX_MIN, DEPART_INSTANT, GTFSData, MAX_DIM};
+use crate::{
+    BBOX_MAX, BBOX_MIN, DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, str_time_to_seconds,
+};
 
 use wgpu::{BufferUsages, util::DeviceExt};
+
+// TODO: switch width, height, begin_time, and max_time to be u32
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ShaderConfig {
+    width: f32,  // how many pixels wide the image is
+    height: f32, // how many pixels tall the image is
+    bbox_min_lat: f32,
+    bbox_min_lon: f32,
+    bbox_max_lat: f32,
+    bbox_max_lon: f32,
+    gpu_grid_cell_size: f32, // size of each cell (in radians)
+    begin_time: f32,         // departure time in seconds since midnight
+    // TODO: fix max time
+    max_time: f32, // latest arrival time in seconds since midnight
+}
 
 // TODO: switch to giving shader some kinda spatial grid rather than having it iterate through all stops for every pixel
 // TODO: switch to a multi-stage aproach that first calculates the arrival time to each pixel, then turns that into a heatmap
 /// stop_positions: (latitude, longitude)
-pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output_path: &str) {
+pub async fn run(
+    gtfs_data: &GTFSData,
+    arrival_times: &HashMap<u32, u32>,
+    gpu_grid_cells: &Vec<GpuGridCell>,
+    gpu_grid_stops: &Vec<[f32; 3]>,
+    output_path: &str,
+) {
     // derive image dimensions from the bounding box aspect ratio
     // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
     let mid_lat = (BBOX_MIN.lat + BBOX_MAX.lat) / 2.0;
@@ -22,7 +46,7 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output
 
     println!("pixels_width : {}", pixels_width);
     println!("pixels_height: {}", pixels_height);
-    println!("aspect: {}\n", aspect_ratio);
+    println!("aspect: {}", aspect_ratio);
 
     let mut stop_positions: Vec<[f32; 3]> = Vec::new();
     for stop in gtfs_data.stops.values() {
@@ -37,7 +61,7 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output
 
     // TODO: replace max_time with actual processing stage to calculate it
     let begin_time = DEPART_INSTANT.time;
-    let max_time = DEPART_INSTANT.time + 3600; // shitty hack to make it display SOMETHING
+    let max_time = DEPART_INSTANT.time + str_time_to_seconds("01:30:00").unwrap(); // shitty hack to make it display SOMETHING
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
@@ -53,34 +77,56 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output
         .unwrap();
     let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
 
-    let stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Stops Buffer"),
-        contents: bytemuck::cast_slice(&stop_positions),
+    // let stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //     label: Some("Stops Buffer"),
+    //     contents: bytemuck::cast_slice(&stop_positions),
+    //     usage: BufferUsages::STORAGE,
+    // });
+
+    let gpu_grid_cells_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GPU Grid Cells Buffer"),
+        contents: bytemuck::cast_slice(&gpu_grid_cells),
         usage: BufferUsages::STORAGE,
     });
 
-    let dimensions_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let gpu_grid_stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GPU Grid Stops Buffer"),
+        contents: bytemuck::cast_slice(&gpu_grid_stops),
+        usage: BufferUsages::STORAGE,
+    });
+
+    let config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Config Buffer"),
-        contents: bytemuck::cast_slice(&[pixels_width as f32, pixels_height as f32]),
+        contents: bytemuck::cast_slice(&[ShaderConfig {
+            width: pixels_width as f32,
+            height: pixels_height as f32,
+            bbox_min_lat: BBOX_MIN.lat as f32,
+            bbox_min_lon: BBOX_MIN.lon as f32,
+            bbox_max_lat: BBOX_MAX.lat as f32,
+            bbox_max_lon: BBOX_MAX.lon as f32,
+            gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
+            begin_time: begin_time as f32,
+            max_time: max_time as f32,
+        }]),
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
-    let bounding_box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Bounding Box Buffer"),
-        contents: bytemuck::cast_slice(&[
-            BBOX_MIN.lat as f32,
-            BBOX_MIN.lon as f32,
-            BBOX_MAX.lat as f32,
-            BBOX_MAX.lon as f32,
-        ]),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
+    // let bounding_box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //     label: Some("Bounding Box Buffer"),
+    //     contents: bytemuck::cast_slice(&[
+    //         BBOX_MIN.lat as f32,
+    //         BBOX_MIN.lon as f32,
+    //         BBOX_MAX.lat as f32,
+    //         BBOX_MAX.lon as f32,
+    //     ]),
+    //     usage: wgpu::BufferUsages::UNIFORM,
+    // });
 
-    let start_max_times_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Times Buffer"),
-        contents: bytemuck::cast_slice(&[begin_time as f32, max_time as f32]),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
+    // let start_max_times_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //     label: Some("Times Buffer"),
+    //     contents: bytemuck::cast_slice(&[begin_time as f32, max_time as f32]),
+    //     usage: wgpu::BufferUsages::UNIFORM,
+    // });
 
     let texture_desc = wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
@@ -126,6 +172,16 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output
         label: None,
         entries: &[
             // Input buffer
+            // wgpu::BindGroupLayoutEntry {
+            //     binding: 0,
+            //     visibility: wgpu::ShaderStages::FRAGMENT,
+            //     ty: wgpu::BindingType::Buffer {
+            //         ty: wgpu::BufferBindingType::Storage { read_only: true },
+            //         has_dynamic_offset: false,
+            //         min_binding_size: None,
+            //     },
+            //     count: None,
+            // },
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -140,7 +196,7 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -156,16 +212,26 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output
                 },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
+            // wgpu::BindGroupLayoutEntry {
+            //     binding: 3,
+            //     visibility: wgpu::ShaderStages::FRAGMENT,
+            //     ty: wgpu::BindingType::Buffer {
+            //         ty: wgpu::BufferBindingType::Uniform,
+            //         has_dynamic_offset: false,
+            //         min_binding_size: None,
+            //     },
+            //     count: None,
+            // },
+            // wgpu::BindGroupLayoutEntry {
+            //     binding: 4,
+            //     visibility: wgpu::ShaderStages::FRAGMENT,
+            //     ty: wgpu::BindingType::Buffer {
+            //         ty: wgpu::BufferBindingType::Uniform,
+            //         has_dynamic_offset: false,
+            //         min_binding_size: None,
+            //     },
+            //     count: None,
+            // },
         ],
     });
 
@@ -177,22 +243,30 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output
         label: None,
         layout: &bind_group_layout,
         entries: &[
+            // wgpu::BindGroupEntry {
+            //     binding: 0,
+            //     resource: stops_buffer.as_entire_binding(),
+            // },
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: stops_buffer.as_entire_binding(),
+                resource: gpu_grid_cells_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: dimensions_buffer.as_entire_binding(),
+                resource: gpu_grid_stops_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: bounding_box_buffer.as_entire_binding(),
+                resource: config_buffer.as_entire_binding(),
             },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: start_max_times_buffer.as_entire_binding(),
-            },
+            // wgpu::BindGroupEntry {
+            //     binding: 3,
+            //     resource: bounding_box_buffer.as_entire_binding(),
+            // },
+            // wgpu::BindGroupEntry {
+            //     binding: 4,
+            //     resource: start_max_times_buffer.as_entire_binding(),
+            // },
         ],
     });
 

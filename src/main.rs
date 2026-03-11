@@ -16,13 +16,15 @@ const MAX_DIM: u32 = 500;
 /// walking speed in kilometers per hour
 const WALKING_SPEED: f64 = 5.0;
 /// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
-const MAX_WALK_TRANSFER_DISTANCE: f64 = 500.0;
+const MAX_WALK_TRANSFER_DISTANCE: f64 = 5000.0;
 
-// bounding box for the heatmap output (Amsterdam-ish area)
+// TODO: switch bounding box to define the minimums and then width and height (to make them all unsigned if possible)
+/// bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MIN: Position = Position {
     lat: 0.909875098007,
     lon: 0.080410372965,
 };
+/// bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MAX: Position = Position {
     lat: 0.914647159795,
     lon: 0.088096506285,
@@ -57,6 +59,7 @@ struct DepartInstant {
 struct SpatialGrid {
     /// <(lat_index, lon_index), list of stop_ids>
     map: HashMap<(i32, i32), Vec<u32>>,
+    /// side length of each cell (in radians)
     cell_size: f64,
 }
 
@@ -251,32 +254,39 @@ fn main() {
             data // return that data
         }
     };
-    println!("Initializing: {}ms", now.elapsed().as_millis());
+    println!("Initializing: {}ms\n", now.elapsed().as_millis());
 
     let now = Instant::now();
     let arrival_times = match initialize_dijkstra(&gtfs_data) {
         Ok(out) => out,
         Err(err) => panic!("error running dijkstra: {:?}", err),
     };
-    println!("Dijkstra: {}ms", now.elapsed().as_millis());
+    println!("Dijkstra: {}ms\n", now.elapsed().as_millis());
 
     println!(
         "depart instant time: {}",
         seconds_to_str_time(&DEPART_INSTANT.time)
     );
+
     let now = Instant::now();
-    // generate_heatmap(
-    //     &gtfs_data,
-    //     &travel_times,
-    //     format!("{OUTPUT_DIRECTORY}{}", "heatmap.png").as_str(),
-    // );
+    let (gpu_grid_cells, gpu_grid_stops) = match initialize_gpu_grid(&gtfs_data, &arrival_times) {
+        Ok(data) => data,
+        Err(err) => {
+            panic!("gpu grid initializing error: {:?}", err);
+        }
+    };
+    println!("gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
+
+    let now = Instant::now();
     shader::run(
         &gtfs_data,
         &arrival_times,
+        &gpu_grid_cells,
+        &gpu_grid_stops,
         format!("{OUTPUT_DIRECTORY}{}", "heatmap.png").as_str(),
     )
     .block_on();
-    println!("Heatmap: {}ms", now.elapsed().as_millis());
+    println!("Heatmap: {}ms\n", now.elapsed().as_millis());
     println!("Heatmap saved to heatmap.png");
 }
 
@@ -563,6 +573,56 @@ fn initialize_dijkstra(
     }
 
     Ok(arrival_times)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuGridCell {
+    lat_index: i32,
+    lon_index: i32,
+    start: u32,
+    count: u32,
+}
+
+// TODO: maybe change it so that the neraby grid cells can be found quickly rather than having to loop through every cell (maybe use a quadtree)
+fn initialize_gpu_grid(
+    gtfs_data: &GTFSData,
+    arrival_times: &HashMap<u32, u32>,
+) -> Result<(Vec<GpuGridCell>, Vec<[f32; 3]>), Box<dyn std::error::Error>> {
+    let mut gpu_grid_cells: Vec<GpuGridCell> = Vec::new();
+    let mut gpu_grid_stops: Vec<[f32; 3]> = Vec::new(); // entries are (stop_lat, stop_lon, arrival_time)
+
+    for (&(lat_index, lon_index), stop_ids) in &gtfs_data.grid.map {
+        let start = gpu_grid_stops.len() as u32;
+        let count = stop_ids.len() as u32;
+
+        // add the stop_ids from the cell into the array
+        for stop_id in stop_ids {
+            let stop = gtfs_data
+                .stops
+                .get(&stop_id)
+                .ok_or(format!("stop id not found -> {}", stop_id))?;
+            let arrival_time: &u32 = arrival_times.get(&stop_id).unwrap_or(&u32::MAX); // default to high arrival time if not found
+
+            gpu_grid_stops.push([
+                stop.position.lat as f32,
+                stop.position.lon as f32,
+                *arrival_time as f32,
+            ]);
+        }
+
+        // add cell as entry into grid cells
+        gpu_grid_cells.push(GpuGridCell {
+            lat_index,
+            lon_index,
+            start,
+            count,
+        });
+    }
+
+    println!("gpu grid cell count: {}", gpu_grid_stops.len());
+
+    Ok((gpu_grid_cells, gpu_grid_stops))
 }
 
 // TODO: split the map into regions that share a common best path, within region just apply a gradient rather than having to recalculate optimal path for each pixel
