@@ -66,6 +66,31 @@ fn get_walk_time(from_position: vec2<f32>,to_position:vec2<f32>)->f32{
 }
 
 fn travel_time_to_color(time:f32)->vec4<f32>{
-    let scale = (1.0 - time);
-    return vec4(scale,scale,scale,1.0);
+    let scale = (time);
+    return vec4(oklab_to_rgb(vec3(0.5,1-scale, scale)),1);
+
+}
+
+
+
+fn oklab_to_rgb(oklab:vec3<f32>)->vec3<f32>{
+    var l = oklab.x + oklab.y * 0.3963377774 + oklab.z * 0.2158037573;
+    var m = oklab.x + oklab.y * -0.1055613458 + oklab.z * -0.0638541728;
+    var s = oklab.x + oklab.y * -0.0894841775 + oklab.z * -1.2914855480;
+    l = l * l * l; m = m * m * m; s = s * s * s;
+    var r = l * 4.0767416621 + m * -3.3077115913 + s * 0.2309699292;
+    var g = l * -1.2684380046 + m * 2.6097574011 + s * -0.3413193965;
+    var b = l * -0.0041960863 + m * -0.7034186147 + s * 1.7076147010;
+    r = 255 * linear_to_gamma(r); g = 255 * linear_to_gamma(g); b = 255 * linear_to_gamma(b);
+    r = clamp(r,0,255); g = clamp(g, 0,255); b = clamp(b, 0, 255);
+    return vec3(r,g,b);
+}
+
+
+fn linear_to_gamma(c:f32)-> f32{
+    if (c >= 0.0031308){
+        return 1.055 * pow(c,1/2.4) - 0.055;
+    }else{
+        return 12.92 * c;
+    }
 }
