@@ -588,9 +588,9 @@ struct GpuGridCell {
 fn initialize_gpu_grid(
     gtfs_data: &GTFSData,
     arrival_times: &HashMap<u32, u32>,
-) -> Result<(Vec<GpuGridCell>, Vec<[f32; 3]>), Box<dyn std::error::Error>> {
+) -> Result<(Vec<GpuGridCell>, Vec<[f32; 4]>), Box<dyn std::error::Error>> {
     let mut gpu_grid_cells: Vec<GpuGridCell> = Vec::new();
-    let mut gpu_grid_stops: Vec<[f32; 3]> = Vec::new(); // entries are (stop_lat, stop_lon, arrival_time)
+    let mut gpu_grid_stops: Vec<[f32; 4]> = Vec::new(); // entries are (stop_lat, stop_lon, arrival_time)
 
     for (&(lat_index, lon_index), stop_ids) in &gtfs_data.grid.map {
         let start = gpu_grid_stops.len() as u32;
@@ -608,6 +608,7 @@ fn initialize_gpu_grid(
                 stop.position.lat as f32,
                 stop.position.lon as f32,
                 *arrival_time as f32,
+                0.0,
             ]);
         }
 

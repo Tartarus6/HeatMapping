@@ -29,7 +29,7 @@ pub async fn run(
     gtfs_data: &GTFSData,
     arrival_times: &HashMap<u32, u32>,
     gpu_grid_cells: &Vec<GpuGridCell>,
-    gpu_grid_stops: &Vec<[f32; 3]>,
+    gpu_grid_stops: &Vec<[f32; 4]>,
     output_path: &str,
 ) {
     // derive image dimensions from the bounding box aspect ratio
@@ -61,7 +61,7 @@ pub async fn run(
 
     // TODO: replace max_time with actual processing stage to calculate it
     let begin_time = DEPART_INSTANT.time;
-    let max_time = DEPART_INSTANT.time + str_time_to_seconds("01:30:00").unwrap(); // shitty hack to make it display SOMETHING
+    let max_time = DEPART_INSTANT.time + str_time_to_seconds("02:00:00").unwrap(); // shitty hack to make it display SOMETHING
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),

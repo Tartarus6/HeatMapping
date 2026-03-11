@@ -26,7 +26,7 @@ struct ShaderConfig {
 
 // @group(0) @binding(0) var<storage, read> stops: array<vec3<f32>>;
 @group(0) @binding(0) var<storage, read> grid_cells: array<GpuGridCell>;
-@group(0) @binding(1) var<storage, read> grid_stops: array<vec3<f32>>;
+@group(0) @binding(1) var<storage, read> grid_stops: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> config: ShaderConfig;
 // @group(0) @binding(3) var<uniform> bounding_box: vec4<f32>;
 // @group(0) @binding(4) var<uniform> start_max_times: vec2<f32>;
@@ -56,18 +56,18 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
 
     for (var i = 0u; i < arrayLength(&grid_cells); i++) { // for each cell
         // if cell is neighboring (or same index)
-        if ((1 <= grid_cells[i].lat_index - pixel_grid_lat_index || grid_cells[i].lat_index - pixel_grid_lat_index <= 1) && (1 <= grid_cells[i].lon_index - pixel_grid_lon_index || grid_cells[i].lon_index - pixel_grid_lon_index <= 1)) {
+       // if ((1 <= grid_cells[i].lat_index - pixel_grid_lat_index && grid_cells[i].lat_index - pixel_grid_lat_index <= 1) && (1 <= grid_cells[i].lon_index - pixel_grid_lon_index && grid_cells[i].lon_index - pixel_grid_lon_index <= 1)) {
             for (var j = grid_cells[i].start; j < grid_cells[i].start + grid_cells[i].count; j++) {
                 var current_time: f32 = get_walk_time(grid_stops[j].xy, pixel_position) + grid_stops[j].z;
                 if (current_time < min_time) {
                     min_time = current_time ;
                 }
-            }
+                //  }
         }
     }
 
-    // for (var i = 0u; i < arrayLength(&stops); i++) { // for each stop
-    //     var current_time:f32 = get_walk_time(stops[i].xy,pixel_position) + stops[i].z;
+    // for (var i = 0u; i < arrayLength(&grid_stops); i++) { // for each stop
+    //     var current_time:f32 = get_walk_time(grid_stops[i].xy,pixel_position) + grid_stops[i].z;
     //     if (current_time < min_time) {
     //         min_time = current_time ;
     //     }
@@ -77,6 +77,7 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
 
     return travel_time_to_color(t);
 }
+
 
 
 /// gets distance in meters between 2 positions
