@@ -100,7 +100,7 @@ impl SpatialGrid {
                 nearby.extend(
                     self.map
                         .get(&(lat_index + d_lat, lon_index + d_lon))
-                        .unwrap_or(&vec![]),
+                        .unwrap_or(&vec![]), // default to empty array if cell not initialized
                 );
             }
         }
@@ -254,7 +254,10 @@ fn main() {
     println!("Initializing: {}ms", now.elapsed().as_millis());
 
     let now = Instant::now();
-    let arrival_times = initialize_dijkstra(&gtfs_data).unwrap();
+    let arrival_times = match initialize_dijkstra(&gtfs_data) {
+        Ok(out) => out,
+        Err(err) => panic!("error running dijkstra: {:?}", err),
+    };
     println!("Dijkstra: {}ms", now.elapsed().as_millis());
 
     println!(
@@ -296,7 +299,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
-        let stop_id = parse_stop_id(&record[0]);
+        let stop_id = parse_stop_id(&record[0])?;
         let position = Position {
             lat: record[3].parse::<f64>()?.to_radians(),
             lon: record[4].parse::<f64>()?.to_radians(),
@@ -320,13 +323,13 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
-        let route_id = record[0].parse().unwrap();
+        let route_id = record[0].parse()?;
 
         gtfs_data.routes.insert(
             route_id,
             Route {
                 route_id: route_id,
-                route_type: parse_route_type(record[5].parse().unwrap()),
+                route_type: parse_route_type(record[5].parse()?),
                 name: record[3].to_string(),
             },
         );
@@ -338,14 +341,14 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
-        let trip_id = record[2].parse().unwrap();
+        let trip_id = record[2].parse()?;
 
         gtfs_data.trips.insert(
             trip_id,
             Trip {
                 trip_id: trip_id,
-                route_id: record[0].parse().unwrap(),
-                service_id: record[1].parse().unwrap(),
+                route_id: record[0].parse()?,
+                service_id: record[1].parse()?,
                 stop_times: vec![],
             },
         );
@@ -358,7 +361,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut stop_times_count: u32 = 0;
     for result in reader.records() {
         let record = result?;
-        let trip_id = record[0].parse().unwrap();
+        let trip_id = record[0].parse()?;
 
         let trip = gtfs_data
             .trips
@@ -366,10 +369,10 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
             .ok_or("stop time trip didn't exist")?;
         trip.stop_times.push(StopTime {
             trip_id: trip_id,
-            stop_sequence: record[1].parse().unwrap(),
-            stop_id: parse_stop_id(&record[2]),
-            arrival_time: str_time_to_seconds(&record[4]),
-            departure_time: str_time_to_seconds(&record[5]),
+            stop_sequence: record[1].parse()?,
+            stop_id: parse_stop_id(&record[2])?,
+            arrival_time: str_time_to_seconds(&record[4])?,
+            departure_time: str_time_to_seconds(&record[5])?,
         });
         stop_times_count += 1;
     }
@@ -380,8 +383,8 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
-        let service_id: u32 = record[0].parse().unwrap();
-        let date = parse_date(&record[1]);
+        let service_id: u32 = record[0].parse()?;
+        let date = parse_date(&record[1])?;
         let exception_type: u32 = record[2].parse().unwrap_or(0); // default to 0, which lets `parse_exception_type()` decide the default
 
         gtfs_data
@@ -395,7 +398,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut reader = Reader::from_reader(file);
     for result in reader.records() {
         let record = result?;
-        let from_stop_id: u32 = parse_stop_id(&record[0]);
+        let from_stop_id: u32 = parse_stop_id(&record[0])?;
 
         gtfs_data
             .transfers
@@ -403,8 +406,9 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
             .or_insert_with(Vec::new)
             .push(Transfer {
                 from_stop_id: from_stop_id,
-                to_stop_id: parse_stop_id(&record[1]),
-                min_transfer_time: record[7].parse().unwrap_or(0),
+                to_stop_id: parse_stop_id(&record[1])?,
+                // TODO: is the GTFS standard format for min_transfer_time in seconds already, or does it need to be converted?
+                min_transfer_time: record[7].parse().unwrap_or(0), // default to 0 if not declared
             });
     }
     // walking transfers (just stored as transfers)
@@ -479,7 +483,7 @@ fn initialize_dijkstra(
         u32::MAX,
         &gtfs_data.connections,
         &gtfs_data,
-    );
+    )?;
 
     let mut priority_queue: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // Min-heap (priority queue) storing pairs of (arrival_time, stop_id)
 
@@ -513,6 +517,7 @@ fn initialize_dijkstra(
         // TODO: (maybe) fix code repetition between trip neighbor exploration and transfer neighbor exploration
 
         // explore all trip connections of the current stop
+        // default to empty array if no connections
         for connection in culled_connections.get(&current_stop_id).unwrap_or(&vec![]) {
             // TODO: if this connection is not in service, skip it
 
@@ -527,6 +532,7 @@ fn initialize_dijkstra(
             if connection.arrival_time
                 < *arrival_times
                     .get(&connection.to_stop_id)
+                    // default to high value if arrival time not yet initialized (so that it can be overridden)
                     .unwrap_or(&u32::MAX)
             {
                 arrival_times.insert(connection.to_stop_id, connection.arrival_time);
@@ -535,10 +541,14 @@ fn initialize_dijkstra(
         }
 
         // explore all transfer connections of the current stop
+        // default to empty array if no transfers
         for transfer in gtfs_data.transfers.get(&current_stop_id).unwrap_or(&vec![]) {
             // if new faster path found, update that travel time and add that node onto the priority queue
             if transfer.min_transfer_time + current_stop_arrival_time
-                < *arrival_times.get(&transfer.to_stop_id).unwrap_or(&u32::MAX)
+                < *arrival_times
+                    .get(&transfer.to_stop_id)
+                    // default to high value if arrival time not yet initialized (so that it can be overridden)
+                    .unwrap_or(&u32::MAX)
             {
                 arrival_times.insert(
                     transfer.to_stop_id,
@@ -663,7 +673,7 @@ fn get_culled_connections(
     max_time: u32,
     connections_map: &HashMap<u32, Vec<Connection>>,
     gtfs_data: &GTFSData,
-) -> HashMap<u32, Vec<Connection>> {
+) -> Result<HashMap<u32, Vec<Connection>>, Box<dyn std::error::Error>> {
     println!("min_time: {}", min_time);
     println!("max_time: {}", max_time);
 
@@ -677,19 +687,27 @@ fn get_culled_connections(
                 continue;
             }
 
-            // TODO: fix service_exception_type definition to be safer (stop using `unwrap()`)
             // TODO: this service exception type check is really slow i think, gotta speed this up (i think it alone is adding 4 seconds of compute)
             let service_exception_type = gtfs_data
                 .services
                 .get(&(
-                    gtfs_data.trips.get(&connection.trip_id).unwrap().service_id,
+                    gtfs_data
+                        .trips
+                        .get(&connection.trip_id)
+                        .ok_or("trip not found (non-fatal)")?
+                        .service_id,
                     DEPART_INSTANT.date,
                 ))
-                .unwrap_or(&ServiceExceptionType::ServiceRemoved);
+                .ok_or("service not found (non-fatal)");
 
             // if connection not in service today, skip it
-            if *service_exception_type != ServiceExceptionType::ServiceAdded {
-                continue;
+            match service_exception_type {
+                Ok(value) => {
+                    if *value != ServiceExceptionType::ServiceAdded {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
             }
 
             culled_connections_map
@@ -700,19 +718,21 @@ fn get_culled_connections(
     }
 
     println!("Loaded {} culled connections", culled_connections_map.len());
-    return culled_connections_map;
+
+    Ok(culled_connections_map)
 }
 
 /// turns time in hh:mm:ss format into number of seconds since midnight
-fn str_time_to_seconds(time_str: &str) -> u32 {
+fn str_time_to_seconds(time_str: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = time_str.split(":").collect();
-    assert_eq!(parts.len(), 3);
 
-    let hours: u32 = parts[0].parse().unwrap();
-    let minutes: u32 = parts[1].parse().unwrap();
-    let seconds: u32 = parts[2].parse().unwrap();
+    assert_eq!(parts.len(), 3); // parts should have ["hh", "mm", "ss"], otherwise panic
 
-    hours * 3600 + minutes * 60 + seconds
+    let hours: u32 = parts[0].parse()?;
+    let minutes: u32 = parts[1].parse()?;
+    let seconds: u32 = parts[2].parse()?;
+
+    Ok(hours * 3600 + minutes * 60 + seconds)
 }
 
 /// turns time in seconds since midnight into hh:mm:ss format
@@ -724,12 +744,14 @@ fn seconds_to_str_time(time: &u32) -> String {
 }
 
 /// parses YYYYMMDD date string into Date struct
-fn parse_date(date_str: &str) -> Date {
-    Date {
-        year: date_str[0..4].parse().unwrap(),
-        month: date_str[4..6].parse().unwrap(),
-        day: date_str[6..8].parse().unwrap(),
-    }
+fn parse_date(date_str: &str) -> Result<Date, Box<dyn std::error::Error>> {
+    let date = Date {
+        year: date_str[0..4].parse()?,
+        month: date_str[4..6].parse()?,
+        day: date_str[6..8].parse()?,
+    };
+
+    Ok(date)
 }
 
 /// converts route_type integer to RouteType enum
@@ -760,12 +782,16 @@ fn parse_exception_type(exception_type: u32) -> ServiceExceptionType {
 }
 
 /// parses stop_id, handling both "600737" and "stoparea:600737" formats
-fn parse_stop_id(stop_id_str: &str) -> u32 {
+fn parse_stop_id(stop_id_str: &str) -> Result<u32, Box<dyn std::error::Error>> {
+    let stop_id: u32;
+
     if let Some(pos) = stop_id_str.rfind(':') {
-        stop_id_str[pos + 1..].parse().unwrap()
+        stop_id = stop_id_str[pos + 1..].parse()?;
     } else {
-        stop_id_str.parse().unwrap()
+        stop_id = stop_id_str.parse()?;
     }
+
+    Ok(stop_id)
 }
 
 /// gets the number of seconds taken to walk between 2 positions based on set walking speed
