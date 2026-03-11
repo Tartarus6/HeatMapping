@@ -55,14 +55,14 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
     var min_time: f32 = config.max_time; // initialize fastest arrival time to the maximum
 
     for (var i = 0u; i < arrayLength(&grid_cells); i++) { // for each cell
-        // if cell is neighboring (or same index)
-       // if ((1 <= grid_cells[i].lat_index - pixel_grid_lat_index && grid_cells[i].lat_index - pixel_grid_lat_index <= 1) && (1 <= grid_cells[i].lon_index - pixel_grid_lon_index && grid_cells[i].lon_index - pixel_grid_lon_index <= 1)) {
+        // if cell is within the 3x3 of cells around the pixel position
+        if (abs(grid_cells[i].lat_index - pixel_grid_lat_index) <= 1 && abs(grid_cells[i].lon_index - pixel_grid_lon_index) <= 1) {
             for (var j = grid_cells[i].start; j < grid_cells[i].start + grid_cells[i].count; j++) {
                 var current_time: f32 = get_walk_time(grid_stops[j].xy, pixel_position) + grid_stops[j].z;
                 if (current_time < min_time) {
                     min_time = current_time ;
                 }
-                //  }
+            }
         }
     }
 
