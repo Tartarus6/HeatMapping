@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{
-    BBOX_MAX, BBOX_MIN, DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, str_time_to_seconds,
-};
+use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, str_time_to_seconds};
 
 use wgpu::{BufferUsages, util::DeviceExt};
 
@@ -30,13 +28,15 @@ pub async fn run(
     arrival_times: &HashMap<u32, u32>,
     gpu_grid_cells: &Vec<GpuGridCell>,
     gpu_grid_stops: &Vec<[f32; 4]>,
+    bbox_min_position: Position,
+    bbox_max_position: Position,
     output_path: &str,
 ) {
     // derive image dimensions from the bounding box aspect ratio
     // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
-    let mid_lat = (BBOX_MIN.lat + BBOX_MAX.lat) / 2.0;
-    let physical_width = (BBOX_MAX.lon - BBOX_MIN.lon) * mid_lat.cos();
-    let physical_height = BBOX_MAX.lat - BBOX_MIN.lat;
+    let mid_lat = (bbox_min_position.lat + bbox_max_position.lat) / 2.0;
+    let physical_width = (bbox_max_position.lon - bbox_min_position.lon) * mid_lat.cos();
+    let physical_height = bbox_max_position.lat - bbox_min_position.lat;
     let aspect_ratio = physical_width / physical_height;
     let (pixels_width, pixels_height) = if aspect_ratio >= 1.0 {
         (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
@@ -61,7 +61,7 @@ pub async fn run(
 
     // TODO: replace max_time with actual processing stage to calculate it
     let begin_time = DEPART_INSTANT.time;
-    let max_time = DEPART_INSTANT.time + str_time_to_seconds("02:00:00").unwrap(); // shitty hack to make it display SOMETHING
+    let max_time = DEPART_INSTANT.time + str_time_to_seconds("05:00:00").unwrap(); // shitty hack to make it display SOMETHING
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
@@ -76,12 +76,6 @@ pub async fn run(
         .await
         .unwrap();
     let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
-
-    // let stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //     label: Some("Stops Buffer"),
-    //     contents: bytemuck::cast_slice(&stop_positions),
-    //     usage: BufferUsages::STORAGE,
-    // });
 
     let gpu_grid_cells_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("GPU Grid Cells Buffer"),
@@ -100,33 +94,16 @@ pub async fn run(
         contents: bytemuck::cast_slice(&[ShaderConfig {
             width: pixels_width as f32,
             height: pixels_height as f32,
-            bbox_min_lat: BBOX_MIN.lat as f32,
-            bbox_min_lon: BBOX_MIN.lon as f32,
-            bbox_max_lat: BBOX_MAX.lat as f32,
-            bbox_max_lon: BBOX_MAX.lon as f32,
+            bbox_min_lat: bbox_min_position.lat as f32,
+            bbox_min_lon: bbox_min_position.lon as f32,
+            bbox_max_lat: bbox_max_position.lat as f32,
+            bbox_max_lon: bbox_max_position.lon as f32,
             gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
             begin_time: begin_time as f32,
             max_time: max_time as f32,
         }]),
         usage: wgpu::BufferUsages::UNIFORM,
     });
-
-    // let bounding_box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //     label: Some("Bounding Box Buffer"),
-    //     contents: bytemuck::cast_slice(&[
-    //         BBOX_MIN.lat as f32,
-    //         BBOX_MIN.lon as f32,
-    //         BBOX_MAX.lat as f32,
-    //         BBOX_MAX.lon as f32,
-    //     ]),
-    //     usage: wgpu::BufferUsages::UNIFORM,
-    // });
-
-    // let start_max_times_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //     label: Some("Times Buffer"),
-    //     contents: bytemuck::cast_slice(&[begin_time as f32, max_time as f32]),
-    //     usage: wgpu::BufferUsages::UNIFORM,
-    // });
 
     let texture_desc = wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
@@ -171,17 +148,6 @@ pub async fn run(
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
         entries: &[
-            // Input buffer
-            // wgpu::BindGroupLayoutEntry {
-            //     binding: 0,
-            //     visibility: wgpu::ShaderStages::FRAGMENT,
-            //     ty: wgpu::BindingType::Buffer {
-            //         ty: wgpu::BufferBindingType::Storage { read_only: true },
-            //         has_dynamic_offset: false,
-            //         min_binding_size: None,
-            //     },
-            //     count: None,
-            // },
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -212,26 +178,6 @@ pub async fn run(
                 },
                 count: None,
             },
-            // wgpu::BindGroupLayoutEntry {
-            //     binding: 3,
-            //     visibility: wgpu::ShaderStages::FRAGMENT,
-            //     ty: wgpu::BindingType::Buffer {
-            //         ty: wgpu::BufferBindingType::Uniform,
-            //         has_dynamic_offset: false,
-            //         min_binding_size: None,
-            //     },
-            //     count: None,
-            // },
-            // wgpu::BindGroupLayoutEntry {
-            //     binding: 4,
-            //     visibility: wgpu::ShaderStages::FRAGMENT,
-            //     ty: wgpu::BindingType::Buffer {
-            //         ty: wgpu::BufferBindingType::Uniform,
-            //         has_dynamic_offset: false,
-            //         min_binding_size: None,
-            //     },
-            //     count: None,
-            // },
         ],
     });
 
@@ -243,10 +189,6 @@ pub async fn run(
         label: None,
         layout: &bind_group_layout,
         entries: &[
-            // wgpu::BindGroupEntry {
-            //     binding: 0,
-            //     resource: stops_buffer.as_entire_binding(),
-            // },
             wgpu::BindGroupEntry {
                 binding: 0,
                 resource: gpu_grid_cells_buffer.as_entire_binding(),
@@ -259,14 +201,6 @@ pub async fn run(
                 binding: 2,
                 resource: config_buffer.as_entire_binding(),
             },
-            // wgpu::BindGroupEntry {
-            //     binding: 3,
-            //     resource: bounding_box_buffer.as_entire_binding(),
-            // },
-            // wgpu::BindGroupEntry {
-            //     binding: 4,
-            //     resource: start_max_times_buffer.as_entire_binding(),
-            // },
         ],
     });
 

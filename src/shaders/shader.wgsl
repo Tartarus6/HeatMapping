@@ -24,12 +24,9 @@ struct ShaderConfig {
     max_time: f32, // latest arrival time in seconds since midnight
 }
 
-// @group(0) @binding(0) var<storage, read> stops: array<vec3<f32>>;
 @group(0) @binding(0) var<storage, read> grid_cells: array<GpuGridCell>;
 @group(0) @binding(1) var<storage, read> grid_stops: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> config: ShaderConfig;
-// @group(0) @binding(3) var<uniform> bounding_box: vec4<f32>;
-// @group(0) @binding(4) var<uniform> start_max_times: vec2<f32>;
 struct VsOut {
     @builtin(position) frag_position: vec4<f32>,
 }
@@ -44,9 +41,9 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
     var bounding_box_min = vec2(config.bbox_min_lat, config.bbox_min_lon);
     var bounding_box_max = vec2(config.bbox_max_lat, config.bbox_max_lon);
 
-    var uv = (vs.frag_position.xy / vec2(config.width, config.height));
+    var uv = (vec2(config.width - vs.frag_position.x, vs.frag_position.y) / vec2(config.width, config.height));
 
-    var pixel_position = (vec2(uv.x, 1.0 - uv.y) * (bounding_box_max - bounding_box_min)) + bounding_box_min;
+    var pixel_position = (vec2(uv.y, 1.0 - uv.x) * (bounding_box_max - bounding_box_min)) + bounding_box_min;
 
     // TODO: is the floor() needed here (i just want to make sure that the i32 casting doesnt sometimes round or ciel or something)
     var pixel_grid_lat_index: i32 = i32(floor(pixel_position.x / config.gpu_grid_cell_size));
@@ -55,6 +52,7 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
     var min_time: f32 = config.max_time; // initialize fastest arrival time to the maximum
 
     for (var i = 0u; i < arrayLength(&grid_cells); i++) { // for each cell
+        // TODO: increase neighbor range near the poles to account for smaller cells
         // if cell is within the 3x3 of cells around the pixel position
         if (abs(grid_cells[i].lat_index - pixel_grid_lat_index) <= 1 && abs(grid_cells[i].lon_index - pixel_grid_lon_index) <= 1) {
             for (var j = grid_cells[i].start; j < grid_cells[i].start + grid_cells[i].count; j++) {
@@ -65,13 +63,6 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
             }
         }
     }
-
-    // for (var i = 0u; i < arrayLength(&grid_stops); i++) { // for each stop
-    //     var current_time:f32 = get_walk_time(grid_stops[i].xy,pixel_position) + grid_stops[i].z;
-    //     if (current_time < min_time) {
-    //         min_time = current_time ;
-    //     }
-    // }
 
     let t = clamp((min_time - config.begin_time) / (config.max_time - config.begin_time),0.0,1.0);// the x value is the begin tine and the y is the max time
 

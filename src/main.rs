@@ -7,27 +7,27 @@ use std::collections::{BinaryHeap, HashMap};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::time::Instant;
-use std::u32;
+use std::{f64, u32};
 
 mod shader;
 
 /// controls the size of the heatmap output, the aspect ratio changes based on bounding box, but this controls the longest side
-const MAX_DIM: u32 = 500;
+const MAX_DIM: u32 = 2048;
 /// walking speed in kilometers per hour
 const WALKING_SPEED: f64 = 5.0;
 /// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
-const MAX_WALK_TRANSFER_DISTANCE: f64 = 5000.0;
+const MAX_WALK_TRANSFER_DISTANCE: f64 = 20000.0;
 
 // TODO: switch bounding box to define the minimums and then width and height (to make them all unsigned if possible)
 /// bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MIN: Position = Position {
-    lat: 0.909875098007,
-    lon: 0.080410372965,
+    lat: 0.87,
+    lon: 0.04,
 };
 /// bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MAX: Position = Position {
-    lat: 0.914647159795,
-    lon: 0.088096506285,
+    lat: 0.94,
+    lon: 0.16,
 };
 
 /// constants for where/when we are starting from
@@ -232,7 +232,7 @@ struct GTFSData {
 fn main() {
     let now = Instant::now();
 
-    // Loading gtfs data
+    // Gtfs data initialization
     let gtfs_data = match load_gtfs_data("cache/gtfs_data") {
         // try loading from cache if possible
         Ok(data) => data,
@@ -256,6 +256,7 @@ fn main() {
     };
     println!("Initializing: {}ms\n", now.elapsed().as_millis());
 
+    // Dijkstra
     let now = Instant::now();
     let arrival_times = match initialize_dijkstra(&gtfs_data) {
         Ok(out) => out,
@@ -263,11 +264,7 @@ fn main() {
     };
     println!("Dijkstra: {}ms\n", now.elapsed().as_millis());
 
-    println!(
-        "depart instant time: {}",
-        seconds_to_str_time(&DEPART_INSTANT.time)
-    );
-
+    // Gpu spatial grid initialization
     let now = Instant::now();
     let (gpu_grid_cells, gpu_grid_stops) = match initialize_gpu_grid(&gtfs_data, &arrival_times) {
         Ok(data) => data,
@@ -275,14 +272,17 @@ fn main() {
             panic!("gpu grid initializing error: {:?}", err);
         }
     };
-    println!("gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
+    println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
 
+    // Shader
     let now = Instant::now();
     shader::run(
         &gtfs_data,
         &arrival_times,
         &gpu_grid_cells,
         &gpu_grid_stops,
+        BBOX_MIN,
+        BBOX_MAX,
         format!("{OUTPUT_DIRECTORY}{}", "heatmap.png").as_str(),
     )
     .block_on();
