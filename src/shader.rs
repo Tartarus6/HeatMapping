@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, str_time_to_seconds};
+use crate::{
+    DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED, str_time_to_seconds,
+};
 
 use wgpu::{BufferUsages, util::DeviceExt};
 use winit::{
@@ -10,6 +12,20 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuGridCellKey {
+    lat: i32,
+    lon: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuGridCellVal {
+    start: u32,
+    count: u32,
+}
 
 // TODO: switch width, height, begin_time, and max_time to be u32
 #[repr(C)]
@@ -24,7 +40,8 @@ struct ShaderConfig {
     gpu_grid_cell_size: f32, // size of each cell (in radians)
     begin_time: f32,         // departure time in seconds since midnight
     // TODO: fix max time
-    max_time: f32, // latest arrival time in seconds since midnight
+    max_time: f32,       // latest arrival time in seconds since midnight
+    walk_speed_mps: f32, // walking speed in meters per second
 }
 
 // Holds all the wgpu state needed to render
@@ -43,7 +60,8 @@ struct RenderState {
 impl RenderState {
     async fn new(
         window: Arc<Window>,
-        gpu_grid_cells: &Vec<GpuGridCell>,
+        gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
+        gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
         gpu_grid_stops: &Vec<[f32; 4]>,
         shader_config: ShaderConfig,
     ) -> Self {
@@ -88,11 +106,19 @@ impl RenderState {
         };
         surface.configure(&device, &config);
 
-        let gpu_grid_cells_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("GPU Grid Cells Buffer"),
-            contents: bytemuck::cast_slice(&gpu_grid_cells),
-            usage: BufferUsages::STORAGE,
-        });
+        let gpu_grid_cell_keys_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("GPU Grid Cell Keys Buffer"),
+                contents: bytemuck::cast_slice(&gpu_grid_cell_keys),
+                usage: BufferUsages::STORAGE,
+            });
+
+        let gpu_grid_cell_vals_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("GPU Grid Cell Values Buffer"),
+                contents: bytemuck::cast_slice(&gpu_grid_cell_vals),
+                usage: BufferUsages::STORAGE,
+            });
 
         let gpu_grid_stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("GPU Grid Stops Buffer"),
@@ -136,6 +162,16 @@ impl RenderState {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
@@ -155,14 +191,18 @@ impl RenderState {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: gpu_grid_cells_buffer.as_entire_binding(),
+                    resource: gpu_grid_cell_keys_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: gpu_grid_cell_vals_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
                     resource: shader_config_buffer.as_entire_binding(),
                 },
             ],
@@ -402,7 +442,8 @@ impl RenderState {
 // Holds data needed before the window is created, and the render state after
 struct App {
     // Pre-init data
-    gpu_grid_cells: Vec<GpuGridCell>,
+    gpu_grid_cell_keys: Vec<GpuGridCellKey>,
+    gpu_grid_cell_vals: Vec<GpuGridCellVal>,
     gpu_grid_stops: Vec<[f32; 4]>,
     shader_config: ShaderConfig,
 
@@ -436,10 +477,6 @@ impl App {
             ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
         };
 
-        println!("pixels_width : {}", pixels_width);
-        println!("pixels_height: {}", pixels_height);
-        println!("aspect: {}", aspect_ratio);
-
         let mut stop_positions: Vec<[f32; 3]> = Vec::new();
         for stop in gtfs_data.stops.values() {
             if let Some(&arrival_time) = arrival_times.get(&stop.stop_id) {
@@ -465,10 +502,14 @@ impl App {
             gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
             begin_time: begin_time as f32,
             max_time: max_time as f32,
+            walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
         };
 
+        let (gpu_grid_cell_keys, gpu_grid_cell_vals) = build_gpu_hash(&gpu_grid_cells);
+
         Self {
-            gpu_grid_cells,
+            gpu_grid_cell_keys,
+            gpu_grid_cell_vals,
             gpu_grid_stops,
             shader_config,
             window: None,
@@ -498,7 +539,8 @@ impl ApplicationHandler for App {
         // resumed() is not async, so we block on the async init here
         let render_state = pollster::block_on(RenderState::new(
             window.clone(),
-            &self.gpu_grid_cells,
+            &self.gpu_grid_cell_keys,
+            &self.gpu_grid_cell_vals,
             &self.gpu_grid_stops,
             self.shader_config,
         ));
@@ -537,8 +579,6 @@ impl ApplicationHandler for App {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / -40.0, // TODO: tune magic number
                     };
-
-                    println!("MouseWheel: {device_id:?} {delta:?}");
 
                     state.zoom(scroll_steps, cursor_pos_px);
 
@@ -633,4 +673,62 @@ pub async fn run(
     );
 
     event_loop.run_app(&mut app).unwrap();
+}
+
+fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGridCellVal>) {
+    // TODO: what's the times 2 for?
+    let cap = (cells.len() * 2).next_power_of_two(); // calculate power of 2 size for hash map (to make gpu happy)
+    let empty = GpuGridCellKey {
+        lat: i32::MIN,
+        lon: i32::MIN,
+    }; // TODO: huh?
+
+    let mut keys = vec![empty; cap];
+    let mut vals = vec![GpuGridCellVal { start: 0, count: 0 }; cap];
+
+    for cell in cells {
+        let key = GpuGridCellKey {
+            lat: cell.lat_index,
+            lon: cell.lon_index,
+        };
+        let val = GpuGridCellVal {
+            start: cell.start,
+            count: cell.count,
+        };
+
+        let mut idx = (hash2_i32(key.lat, key.lon) as usize) & (cap - 1); // TODO: huh?
+
+        // TODO: huh?
+        loop {
+            if keys[idx].lat == i32::MIN {
+                keys[idx] = key;
+                vals[idx] = val;
+                break;
+            }
+            // if duplicate key possible, overwrite/merge here
+            idx = (idx + 1) & (cap - 1);
+        }
+    }
+
+    return (keys, vals);
+}
+
+/// hash function for gpu compatibility (used to compute hashes for a hashmap that can be used within shaders)
+fn hash2_i32(a: i32, b: i32) -> u32 {
+    let mut x = a as u32;
+    let mut y = b as u32;
+
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846ca68b);
+    x ^= x >> 16;
+
+    y ^= y >> 16;
+    y = y.wrapping_mul(0x7feb352d);
+    y ^= y >> 15;
+    y = y.wrapping_mul(0x846ca68b);
+    y ^= y >> 16;
+
+    x ^ y.rotate_left(16)
 }

@@ -479,6 +479,7 @@ fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
 
 // TODO: is there a way to reuse the data from other dijkstra runs, rather than having to totally recalculate for each different starting position?
 // TODO: (maybe) optimize by finding "hub nodes", and precomputing the travel times between them. then using that hub-to-hub time as an offset to prevent the need to calculate paths across hubs
+// TODO: move dijkstra calculations into a shader
 /// runs the dijkstra algorithm with each stop as a node, with "connections" and "transfers" as the edges
 /// returns HashMap<to_stop_id: u32, arrival_time: u32> (arrival time in secons since midnight)
 fn initialize_dijkstra(
@@ -583,7 +584,7 @@ struct GpuGridCell {
     count: u32,
 }
 
-// TODO: maybe change it so that the neraby grid cells can be found quickly rather than having to loop through every cell (maybe use a quadtree)
+// TODO: remove this function. purpose is superceeded by ones in shader.rs (will need to refactor those supeceeding functions to use SpatialGrid instead of the output of this function)
 fn initialize_gpu_grid(
     gtfs_data: &GTFSData,
     arrival_times: &HashMap<u32, u32>,
@@ -624,106 +625,6 @@ fn initialize_gpu_grid(
 
     Ok((gpu_grid_cells, gpu_grid_stops))
 }
-
-// TODO: split the map into regions that share a common best path, within region just apply a gradient rather than having to recalculate optimal path for each pixel
-// TODO: make this generate some kinda vector graphic maybe
-/// generates an image displaying the time it takes to get from the starting position to any other position (within the heatmap) as a color gradient
-/// uses the parsed gtfs data and the travel times from the dijkstra algorithm
-fn generate_heatmap(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>, output_path: &str) {
-    // // derive image dimensions from the bounding box aspect ratio
-    // // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
-    // let mid_lat = (BBOX_MIN.lat + BBOX_MAX.lat) / 2.0;
-    // let physical_width = (BBOX_MAX.lon - BBOX_MIN.lon) * mid_lat.cos();
-    // let physical_height = BBOX_MAX.lat - BBOX_MIN.lat;
-    // let aspect_ratio = physical_width / physical_height;
-    // let (width, height) = if aspect_ratio >= 1.0 {
-    //     (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
-    // } else {
-    //     ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
-    // };
-
-    // println!("width : {}", width);
-    // println!("height: {}", height);
-    // println!("aspect: {}\n", aspect_ratio);
-
-    // let mut stop_positions: Vec<[f32; 3]> = Vec::new();
-    // for stop in gtfs_data.stops.values() {
-    //     if let Some(&arrival_time) = arrival_times.get(&stop.stop_id) {
-    //         stop_positions.push([
-    //             stop.position.lat as f32,
-    //             stop.position.lon as f32,
-    //             arrival_time as f32,
-    //         ]);
-    //     }
-    // }
-    //TODO FIX THIS SHIT for an actual real max time
-    //let max_time = arrival_times.values().max().unwrap() + 1800; this is actual max time ,
-
-    // shader::run(&gtfs_data, &arrival_times, output_path).block_on();
-
-    // let mut pixel_arrival_time_map: HashMap<(u32, u32), u32> = HashMap::new(); // <(px, py), arrival_time>
-
-    // // finding travel times for each pixel, storing in a map
-    // let mut max_time: u32 = 0; // stores the latest pixel arrival_time found
-
-    // for py in 0..height {
-    //     for px in 0..width {
-    //         // map pixel to lat/lon
-    //         let lat = max_lat - (py as f64 / height as f64) * (max_lat - min_lat); // flip y axis
-    //         let lon = min_lon + (px as f64 / width as f64) * (max_lon - min_lon);
-
-    //         let pixel_pos = Position { lat, lon };
-
-    //         // find best stop
-    //         let nearby_stops = gtfs_data.grid.get_nearby(pixel_pos);
-    //         let best_stop_id = nearby_stops.iter().min_by(|a, b| {
-    //             // sort stops based on stop arrival time + walk time to pixel_pos from stop
-    //             let stop_a = gtfs_data.stops.get(a).unwrap();
-    //             let stop_b = gtfs_data.stops.get(b).unwrap();
-    //             let da = get_walk_time(pixel_pos, stop_a.position);
-    //             // + arrival_times.get(&stop_a.stop_id).unwrap();
-    //             let db = get_walk_time(pixel_pos, stop_b.position);
-    //             // + arrival_times.get(&stop_b.stop_id).unwrap();
-    //             da.partial_cmp(&db).unwrap()
-    //         });
-
-    //         match best_stop_id.and_then(|stop_id| arrival_times.get(stop_id)) {
-    //             Some(&arrival_time) => {
-    //                 max_time = max_time.max(arrival_time);
-    //                 pixel_arrival_time_map.insert(
-    //                     (px, py),
-    //                     arrival_time
-    //                         + get_walk_time(
-    //                             pixel_pos,
-    //                             gtfs_data.stops.get(best_stop_id.unwrap()).unwrap().position,
-    //                         ),
-    //                 );
-    //             }
-    //             None => (),
-    //         };
-    //     }
-    // }
-
-    // // generating image from values stored in map
-    // let mut img = ImageBuffer::new(width, height);
-    // for ((px, py), arrival_time) in pixel_arrival_time_map {
-    //     let t = (arrival_time.saturating_sub(DEPART_INSTANT.time) as f64)
-    //         / (max_time - DEPART_INSTANT.time) as f64;
-    //     let color = travel_time_to_color(t.clamp(0.0, 1.0));
-
-    //     img.put_pixel(px, py, color);
-    // }
-
-    // img.save(output_path).unwrap(); // create the image file
-}
-
-/// Maps a normalized travel time (0.0 = fastest, 1.0 = slowest) to a color.
-/// white -> black
-// fn travel_time_to_color(t: f64) -> Rgb<u8> {
-//     // white to black
-//     let s = ((1.0 - t) * 255.0) as u8;
-//     Rgb([s, s, s])
-// }
 
 // TODO: switch to using binary search instead of iterating through until it's found
 // TODO: add ability to ignore certain transport types (i.e. only no-busses routes)
