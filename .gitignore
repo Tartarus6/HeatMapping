@@ -1,3 +1,13 @@
 /target
+
+# gtfs files
 /src/lib/gtfs-nl
 /src/lib/gtfs-nl.zip
+
+# program outputs (but keep the folder)
+/output/*
+!/output/.gitkeep
+
+# program cache (but keep the folder)
+/cache/*
+!/cache/.gitkeep
