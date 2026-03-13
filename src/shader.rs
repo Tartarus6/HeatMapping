@@ -311,7 +311,7 @@ impl RenderState {
 
         // pixel -> normalized
         let u = x / w; // left..right
-        let v = 1.0 - (y / h); // top..bottom
+        let v = 1.0 - (y / h); // bottom..top (since map has north as up)
 
         // world under cursor before zoom
         let world_lon = min_lon + u * lon_span;
