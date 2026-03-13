@@ -389,8 +389,6 @@ impl RenderState {
             self.shader_config.width = new_size.width as f32;
             self.shader_config.height = new_size.height as f32;
             self.upload_shader_config();
-
-            println!("resized!");
         }
     }
 

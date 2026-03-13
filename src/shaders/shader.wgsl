@@ -61,6 +61,8 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
 
     var min_time: f32 = config.max_time; // initialize fastest arrival time to the maximum so that it can be overridden later
 
+    var in_stop_dot = false; // flag to say whether pixel is part of the dot marking a stop
+
     // TODO: increase neighbor range near the poles to account for smaller cells
     // for the 3x3 of cells around the pixel...
     for (var d_lat_index = -1; d_lat_index <= 1; d_lat_index++) {
@@ -70,19 +72,25 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
             // for each stop within current cell
             for (var stop_index = cell_val.start; stop_index < cell_val.start + cell_val.count; stop_index++) {
                 var current_time: f32 = get_walk_time(grid_stops[stop_index].xy, pixel_position, cos_phi) + grid_stops[stop_index].z;
-                if (equirectangular_distance(grid_stops[stop_index].xy,pixel_position,cos_phi) < 100){
-                    return vec4(0,255,0,1);
+                if equirectangular_distance(grid_stops[stop_index].xy, pixel_position, cos_phi) < 100 {
+                    in_stop_dot = true;
                 }
-                if (current_time < min_time) {
-                    min_time = current_time ;
+                if current_time < min_time {
+                    min_time = current_time;
                 }
             }
         }
     }
 
-    let t = clamp((min_time - config.begin_time) / (config.max_time - config.begin_time),0.0,1.0);// the x value is the begin tine and the y is the max time
+    let t = clamp((min_time - config.begin_time) / (config.max_time - config.begin_time), 0.0, 1.0);// the x value is the begin tine and the y is the max time
 
-    return travel_time_to_color(t);
+    let color = travel_time_to_color(t);
+
+    if in_stop_dot {
+        return invert_color(color);
+    }
+
+    return color;
 }
 
 fn lookup_cell(lat_i: i32, lon_i: i32) -> GpuGridCellVal {
@@ -94,11 +102,11 @@ fn lookup_cell(lat_i: i32, lon_i: i32) -> GpuGridCellVal {
         let k = grid_cell_keys[idx];
 
         // empty => not found
-        if (k.lat == i32(0x80000000u) && k.lon == i32(0x80000000u)) {
+        if k.lat == i32(0x80000000u) && k.lon == i32(0x80000000u) {
             return GpuGridCellVal(0u, 0u); // count=0 means missing
         }
 
-        if (k.lat == lat_i && k.lon == lon_i) {
+        if k.lat == lat_i && k.lon == lon_i {
             let v = grid_cell_vals[idx];
             return GpuGridCellVal(v.start, v.count);
         }
@@ -109,9 +117,8 @@ fn lookup_cell(lat_i: i32, lon_i: i32) -> GpuGridCellVal {
     return GpuGridCellVal(0u, 0u);
 }
 
-
 /// gets time in seconds to walk between 2 positions (based on distance)
-fn get_walk_time(from_position: vec2<f32>,to_position:vec2<f32>, cos_phi: f32)->f32{
+fn get_walk_time(from_position: vec2<f32>, to_position: vec2<f32>, cos_phi: f32) -> f32 {
     return equirectangular_distance(from_position, to_position, cos_phi) * config.inverse_walk_speed_mps;
 }
 
@@ -124,14 +131,14 @@ fn equirectangular_distance(position_a: vec2<f32>, position_b: vec2<f32>, cos_ph
     return EARTH_RADIUS_METER * sqrt((delta_lambda * cos_phi) * (delta_lambda * cos_phi) + (delta_phi * delta_phi));
 }
 
-fn travel_time_to_color(time:f32)->vec4<f32>{
+fn travel_time_to_color(time: f32) -> vec4<f32> {
     let scale = (time);
-    let red    = vec3(0.55,  0.2,   0.15);  //fastest
-    let orange = vec3(0.65,  0.1,  0.5);
-    let yellow = vec3(0.85,  0.00,  0.18);
-    let green  = vec3(0.72, -0.18,  0.08);
-    let blue   = vec3(0.55, -0.05, -0.2);
-    let purple = vec3(0.4,   0.15, -0.2);   //slowest
+    let red = vec3(0.55, 0.2, 0.15);  //fastest
+    let orange = vec3(0.65, 0.1, 0.5);
+    let yellow = vec3(0.85, 0.00, 0.18);
+    let green = vec3(0.72, -0.18, 0.08);
+    let blue = vec3(0.55, -0.05, -0.2);
+    let purple = vec3(0.4, 0.15, -0.2);   //slowest
 
     var oklab: vec3<f32>;
     if scale < 0.20 {
@@ -140,7 +147,7 @@ fn travel_time_to_color(time:f32)->vec4<f32>{
         oklab = mix(orange, yellow, (scale - 0.20) / 0.20);
     } else if scale < 0.60 {
         oklab = mix(yellow, green, (scale - 0.40) / 0.20);
-    } else if scale < 0.80{
+    } else if scale < 0.80 {
         oklab = mix(green, blue, (scale - 0.60) / 0.20);
     } else {
         oklab = mix(blue, purple, (scale - 0.80) / 0.20);
@@ -149,9 +156,7 @@ fn travel_time_to_color(time:f32)->vec4<f32>{
     return vec4(oklab_to_rgb(oklab), 1.0);
 }
 
-
-
-fn oklab_to_rgb(oklab:vec3<f32>)->vec3<f32>{
+fn oklab_to_rgb(oklab: vec3<f32>) -> vec3<f32> {
     var l = oklab.x + oklab.y * 0.3963377774 + oklab.z * 0.2158037573;
     var m = oklab.x + oklab.y * -0.1055613458 + oklab.z * -0.0638541728;
     var s = oklab.x + oklab.y * -0.0894841775 + oklab.z * -1.2914855480;
@@ -159,18 +164,21 @@ fn oklab_to_rgb(oklab:vec3<f32>)->vec3<f32>{
     var r = l * 4.0767416621 + m * -3.3077115913 + s * 0.2309699292;
     var g = l * -1.2684380046 + m * 2.6097574011 + s * -0.3413193965;
     var b = l * -0.0041960863 + m * -0.7034186147 + s * 1.7076147010;
-    r =  linear_to_gamma(r); g = linear_to_gamma(g); b =  linear_to_gamma(b);
-    r = clamp(r,0.0,1.0); g = clamp(g, 0.0,1.0); b = clamp(b, 0, 1.0);
-    return vec3(r,g,b);
+    r = linear_to_gamma(r); g = linear_to_gamma(g); b = linear_to_gamma(b);
+    r = clamp(r, 0.0, 1.0); g = clamp(g, 0.0, 1.0); b = clamp(b, 0, 1.0);
+    return vec3(r, g, b);
 }
 
-
-fn linear_to_gamma(c:f32)-> f32{
-    if (c >= 0.0031308){
-        return 1.055 * pow(c,1.0/2.4) - 0.055;
-    }else{
+fn linear_to_gamma(c: f32) -> f32 {
+    if c >= 0.0031308 {
+        return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+    } else {
         return 12.92 * c;
     }
+}
+
+fn invert_color(color: vec4<f32>) -> vec4<f32> {
+    return vec4(1.0 - color.rgb, color.a);
 }
 
 fn hash2_i32(a: i32, b: i32) -> u32 {
