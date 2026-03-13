@@ -70,6 +70,9 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
             // for each stop within current cell
             for (var stop_index = cell_val.start; stop_index < cell_val.start + cell_val.count; stop_index++) {
                 var current_time: f32 = get_walk_time(grid_stops[stop_index].xy, pixel_position, cos_phi) + grid_stops[stop_index].z;
+                if (equirectangular_distance(grid_stops[stop_index].xy,pixel_position,cos_phi) < 100){
+                    return vec4(0,255,0,1);
+                }
                 if (current_time < min_time) {
                     min_time = current_time ;
                 }
