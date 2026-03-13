@@ -79,7 +79,7 @@ impl RenderState {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: None,
+                compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             })
             .await
@@ -311,7 +311,7 @@ impl RenderState {
 
         // pixel -> normalized
         let u = x / w; // left..right
-        let v = y / h; // top..bottom
+        let v = 1.0 - (y / h); // top..bottom
 
         // world under cursor before zoom
         let world_lon = min_lon + u * lon_span;
@@ -557,8 +557,11 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => {
-                // TODO: this doesn't seem to work
-                event_loop.exit();
+                // unset window stuff, so that the program knows the window was closed rather than just being confused
+                self.render_state = None;
+                self.window = None;
+
+                event_loop.exit(); // and also stop the loop
             }
             WindowEvent::Resized(new_size) => {
                 if let Some(state) = &mut self.render_state {

@@ -286,7 +286,6 @@ fn main() {
     )
     .block_on();
     println!("Heatmap: {}ms\n", now.elapsed().as_millis());
-    println!("Heatmap saved to heatmap.png");
 }
 
 // TODO: switch all latitudes and longitudes to use radians (for consistency)
