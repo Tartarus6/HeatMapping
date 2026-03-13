@@ -43,6 +43,11 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
 
     var uv = (vec2(config.width - vs.frag_position.x, vs.frag_position.y) / vec2(config.width, config.height));
 
+
+    // uncomment line below for debug (makes rendering much much faster)
+    // return vec4(uv,0.0,1.0);
+
+
     var pixel_position = (vec2(uv.y, 1.0 - uv.x) * (bounding_box_max - bounding_box_min)) + bounding_box_min;
 
     // TODO: is the floor() needed here (i just want to make sure that the i32 casting doesnt sometimes round or ciel or something)

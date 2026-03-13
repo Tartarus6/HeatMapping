@@ -12,7 +12,7 @@ use std::{f64, u32};
 mod shader;
 
 /// controls the size of the heatmap output, the aspect ratio changes based on bounding box, but this controls the longest side
-const MAX_DIM: u32 = 2048;
+const MAX_DIM: u32 = 512;
 /// walking speed in kilometers per hour
 const WALKING_SPEED: f64 = 5.0;
 /// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
@@ -279,11 +279,10 @@ fn main() {
     shader::run(
         &gtfs_data,
         &arrival_times,
-        &gpu_grid_cells,
-        &gpu_grid_stops,
+        gpu_grid_cells,
+        gpu_grid_stops,
         BBOX_MIN,
         BBOX_MAX,
-        format!("{OUTPUT_DIRECTORY}{}", "heatmap.png").as_str(),
     )
     .block_on();
     println!("Heatmap: {}ms\n", now.elapsed().as_millis());
