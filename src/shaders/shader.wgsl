@@ -142,15 +142,15 @@ fn travel_time_to_color(time: f32) -> vec4<f32> {
 
     var oklab: vec3<f32>;
     if scale < 0.20 {
-        oklab = mix(red, orange, scale / 0.20);
+        oklab = mix(red, orange, scale * 5);
     } else if scale < 0.40 {
-        oklab = mix(orange, yellow, (scale - 0.20) / 0.20);
+        oklab = mix(orange, yellow, (scale - 0.20) * 5);
     } else if scale < 0.60 {
-        oklab = mix(yellow, green, (scale - 0.40) / 0.20);
+        oklab = mix(yellow, green, (scale - 0.40) * 5);
     } else if scale < 0.80 {
-        oklab = mix(green, blue, (scale - 0.60) / 0.20);
+        oklab = mix(green, blue, (scale - 0.60) * 5);
     } else {
-        oklab = mix(blue, purple, (scale - 0.80) / 0.20);
+        oklab = mix(blue, purple, (scale - 0.80) * 5);
     }
 
     return vec4(oklab_to_rgb(oklab), 1.0);
@@ -171,7 +171,7 @@ fn oklab_to_rgb(oklab: vec3<f32>) -> vec3<f32> {
 
 fn linear_to_gamma(c: f32) -> f32 {
     if c >= 0.0031308 {
-        return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+        return 1.055 * pow(c, 0.41666666666) - 0.055;
     } else {
         return 12.92 * c;
     }
