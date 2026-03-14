@@ -22,7 +22,7 @@ const WALKING_SPEED: f64 = 5.0;
 /// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
 const MAX_WALK_TRANSFER_DISTANCE: f64 = 20000.0;
 
-// TODO: switch bounding box to define the minimums and then width and height (to make them all unsigned if possible)
+// TODO: remove bounding box consts, since it's all handled in render.rs anyways (could instead have either const starting center point, or compute the average of all stops maybe)
 /// bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MIN: Position = Position {
     lat: 0.87,
@@ -37,8 +37,12 @@ const BBOX_MAX: Position = Position {
 /// constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
     position: Position {
+        // Amsterdam
         lat: 0.913998595445,
         lon: 0.085599725524,
+        // Copenhagen (i think)
+        // lat: 0.972092,
+        // lon: 0.218484,
     },
     time: 32400, // 09:00:00
     date: Date {
@@ -50,7 +54,7 @@ const DEPART_INSTANT: DepartInstant = DepartInstant {
 
 // const OUTPUT_DIRECTORY: &str = "./output/";
 const CACHE_DIRECTORY: &str = "./cache/";
-const GTFS_DIRECTORY: &str = "./src/lib/gtfs-nl/";
+const GTFS_DIRECTORY: &str = "./src/lib/GTFS/";
 
 fn main() {
     let now = Instant::now();

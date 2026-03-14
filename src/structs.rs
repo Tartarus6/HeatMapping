@@ -242,3 +242,16 @@ pub fn parse_stop_id(stop_id_str: &str) -> Result<u32, Box<dyn std::error::Error
 
     Ok(stop_id)
 }
+
+/// parses route_id, handling both "600737" and "stoparea:600737" formats
+pub fn parse_route_id(route_id_str: &str) -> Result<u32, Box<dyn std::error::Error>> {
+    let route_id: u32;
+
+    if route_id_str.rfind('_').is_some() {
+        route_id = route_id_str.replace('_', "").parse()?;
+    } else {
+        route_id = route_id_str.parse()?;
+    }
+
+    Ok(route_id)
+}
