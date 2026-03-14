@@ -71,21 +71,33 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
 
             // for each stop within current cell
             for (var stop_index = cell_val.start; stop_index < cell_val.start + cell_val.count; stop_index++) {
-                var current_time: f32 = get_walk_time(grid_stops[stop_index].xy, pixel_position, cos_phi) + grid_stops[stop_index].z;
-                if equirectangular_distance(grid_stops[stop_index].xy, pixel_position, cos_phi) < 100 {
+                // get walk time as well as distance (done together to save compute)
+                let walk_time_and_distance: vec2<f32> = get_walk_time_and_distance(grid_stops[stop_index].xy, pixel_position, cos_phi);
+
+                // separate arrival time and distance variables
+                let current_arrivel_time = walk_time_and_distance.x + grid_stops[stop_index].z;
+                let distance = walk_time_and_distance.y;
+
+                // if pixel is within 100m of this stop, mark it as part of a dot
+                if distance < 100 {
                     in_stop_dot = true;
                 }
-                if current_time < min_time {
-                    min_time = current_time;
+
+                // update fastest time if current arrival time is faster than fastest yet found
+                if current_arrivel_time < min_time {
+                    min_time = current_arrivel_time;
                 }
             }
         }
     }
 
-    let t = clamp((min_time - config.begin_time) / (config.max_time - config.begin_time), 0.0, 1.0);// the x value is the begin tine and the y is the max time
+    // transform arrival time into a 0.0-1.0 scale
+    let t = clamp((min_time - config.begin_time) / (config.max_time - config.begin_time), 0.0, 1.0);
 
+    // calculate the color using arrival time
     let color = travel_time_to_color(t);
 
+    // if pixel is within a dot, invert the color
     if in_stop_dot {
         return invert_color(color);
     }
@@ -93,6 +105,7 @@ fn fs_main(vs: VsOut) -> @location(0) vec4<f32> {
     return color;
 }
 
+// todo: figure out how this works, it's just copied
 fn lookup_cell(lat_i: i32, lon_i: i32) -> GpuGridCellVal {
     let cap: u32 = arrayLength(&grid_cell_keys);
     let mask: u32 = cap - 1u;
@@ -118,8 +131,10 @@ fn lookup_cell(lat_i: i32, lon_i: i32) -> GpuGridCellVal {
 }
 
 /// gets time in seconds to walk between 2 positions (based on distance)
-fn get_walk_time(from_position: vec2<f32>, to_position: vec2<f32>, cos_phi: f32) -> f32 {
-    return equirectangular_distance(from_position, to_position, cos_phi) * config.inverse_walk_speed_mps;
+/// result as (walk_time, distance)
+fn get_walk_time_and_distance(from_position: vec2<f32>, to_position: vec2<f32>, cos_phi: f32) -> vec2<f32> {
+    let distance = equirectangular_distance(from_position, to_position, cos_phi);
+    return vec2(distance * config.inverse_walk_speed_mps, distance);
 }
 
 const EARTH_RADIUS_METER: f32 = 6371000.0;
