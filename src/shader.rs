@@ -1,9 +1,9 @@
+// This file contains all of the implementations related to shaders and rendering
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{
-    DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED, str_time_to_seconds,
-};
+use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED};
 
 use wgpu::{BufferUsages, util::DeviceExt};
 use winit::{
@@ -488,7 +488,7 @@ impl App {
 
         // TODO: replace max_time with actual processing stage to calculate it
         let begin_time = DEPART_INSTANT.time;
-        let max_time = DEPART_INSTANT.time + str_time_to_seconds("05:00:00").unwrap(); // shitty hack to make it display SOMETHING
+        let max_time = DEPART_INSTANT.time + 18000; // shitty hack to make it display SOMETHING
 
         let shader_config = ShaderConfig {
             width: pixels_width as f32,
