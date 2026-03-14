@@ -1,8 +1,5 @@
-use csv::Reader;
-// use image::{ImageBuffer, Rgb};
 use pollster::FutureExt;
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::time::Instant;
@@ -10,10 +7,7 @@ use std::{f64, u32};
 
 use crate::dijkstra::initialize_dijkstra;
 use crate::parse::initialize_data;
-use crate::structs::{
-    Connection, Date, DepartInstant, GTFSData, Position, Route, RouteType, ServiceExceptionType,
-    SpatialGrid, Stop, StopTime, Transfer, Trip,
-};
+use crate::structs::{Date, DepartInstant, GTFSData, Position};
 
 mod dijkstra;
 mod parse;
@@ -54,7 +48,7 @@ const DEPART_INSTANT: DepartInstant = DepartInstant {
     },
 };
 
-const OUTPUT_DIRECTORY: &str = "./output/";
+// const OUTPUT_DIRECTORY: &str = "./output/";
 const CACHE_DIRECTORY: &str = "./cache/";
 const GTFS_DIRECTORY: &str = "./src/lib/gtfs-nl/";
 

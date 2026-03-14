@@ -7,8 +7,8 @@ use std::fs::File;
 use crate::{
     GTFS_DIRECTORY, MAX_WALK_TRANSFER_DISTANCE,
     structs::{
-        Connection, Date, DepartInstant, GTFSData, Position, Route, RouteType,
-        ServiceExceptionType, SpatialGrid, Stop, StopTime, Transfer, Trip, parse_stop_id,
+        Connection, Date, GTFSData, Position, Route, RouteType, ServiceExceptionType, SpatialGrid,
+        Stop, StopTime, Transfer, Trip, parse_stop_id,
     },
     utils::{get_walk_time, str_time_to_seconds},
 };

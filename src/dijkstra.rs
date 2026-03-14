@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::{
-    DEPART_INSTANT, WALKING_SPEED,
-    structs::{Connection, GTFSData, Position, ServiceExceptionType},
+    DEPART_INSTANT,
+    structs::{Connection, GTFSData, ServiceExceptionType},
     utils::get_walk_time,
 };
 
