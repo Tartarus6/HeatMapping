@@ -1,8 +1,8 @@
 /target
 
-# gtfs files
-/src/lib/gtfs-nl
-/src/lib/gtfs-nl.zip
+# gtfs files (but keep folder)
+/src/lib/GTFS/*
+!/src/lib/GTFS/.gitkeep
 
 # program outputs (but keep the folder)
 /output/*

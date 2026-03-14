@@ -620,6 +620,35 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+
+                if button == MouseButton::Right && state == ElementState::Pressed {
+                    if let (Some(state), Some(pos)) =
+                        (self.render_state.as_ref(), self.cursor_pos_px)
+                    {
+                        let w = state.config.width as f32;
+                        let h = state.config.height as f32;
+                        if w > 0.0 && h > 0.0 {
+                            // clamp cursor to window
+                            let x = (pos.x as f32).clamp(0.0, w);
+                            let y = (pos.y as f32).clamp(0.0, h);
+
+                            // normalized coords
+                            let u = x / w; // 0..1 left->right
+                            let v = 1.0 - (y / h); // 0..1 bottom->top
+
+                            // bbox -> world
+                            let min_lon = state.shader_config.bbox_min_lon;
+                            let max_lon = state.shader_config.bbox_max_lon;
+                            let min_lat = state.shader_config.bbox_min_lat;
+                            let max_lat = state.shader_config.bbox_max_lat;
+
+                            let lon = min_lon + u * (max_lon - min_lon);
+                            let lat = max_lat - v * (max_lat - min_lat);
+
+                            println!("clicked lat/lon: {:.6}, {:.6}", lat, lon);
+                        }
+                    }
+                }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(state) = &self.render_state {
