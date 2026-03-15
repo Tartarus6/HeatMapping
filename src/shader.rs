@@ -5,13 +5,15 @@ use std::sync::Arc;
 
 use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED};
 
-use wgpu::{BufferUsages, util::DeviceExt};
+use wgpu::{BufferUsages, Texture, TextureView, util::DeviceExt};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
+
+// TODO: add a scale reference (like google maps has) showing how zoomed in the view is
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -40,8 +42,9 @@ struct ShaderConfig {
     gpu_grid_cell_size: f32, // size of each cell (in radians)
     begin_time: f32,         // departure time in seconds since midnight
     // TODO: fix max time
-    max_time: f32,       // latest arrival time in seconds since midnight
-    walk_speed_mps: f32, // walking speed in meters per second
+    max_time: f32,               // latest arrival time in seconds since midnight
+    inverse_walk_speed_mps: f32, // walking speed in seconds per meter
+    jump_size: f32,              // jump size for JFA
 }
 
 // Holds all the wgpu state needed to render
@@ -50,11 +53,41 @@ struct RenderState {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+
+    num_stops: u32,
+
+    gpu_grid_stops_buffer: wgpu::Buffer,
+
+    jfa_seed_pipeline: wgpu::ComputePipeline,
+    jfa_seed_bind_group: wgpu::BindGroup,
+    jfa_seed_bind_group_layout: wgpu::BindGroupLayout,
+
+    jfa_step_pipeline: wgpu::ComputePipeline,
+    jfa_step_bind_group_a: wgpu::BindGroup,
+    jfa_step_bind_group_b: wgpu::BindGroup,
+    jfa_step_bind_group_layout: wgpu::BindGroupLayout,
+
+    jfa_render_pipeline: wgpu::RenderPipeline,
+    jfa_render_bind_group_a: wgpu::BindGroup,
+    jfa_render_bind_group_b: wgpu::BindGroup,
+    jfa_render_bind_group_layout: wgpu::BindGroupLayout,
+
     render_pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+    render_bind_group: wgpu::BindGroup,
 
     shader_config: ShaderConfig,        // CPU-side copy
     shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+
+    jfa_texture_a: wgpu::Texture,
+    jfa_texture_b: wgpu::Texture,
+    jfa_texture_a_view: wgpu::TextureView,
+    jfa_texture_b_view: wgpu::TextureView,
+
+    // NEW: staged jump values, copied into shader_config_buffer each pass
+    jfa_jump_values_buffer: wgpu::Buffer,
+    jfa_jump_count: u32,
+    // byte offset of `jump_size` field inside ShaderConfig
+    shader_config_jump_offset_bytes: u64,
 }
 
 impl RenderState {
@@ -84,7 +117,17 @@ impl RenderState {
             })
             .await
             .unwrap();
-        let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::CLEAR_TEXTURE,
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
+            })
+            .await
+            .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -106,6 +149,7 @@ impl RenderState {
         };
         surface.configure(&device, &config);
 
+        // Initializing Buffers
         let gpu_grid_cell_keys_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("GPU Grid Cell Keys Buffer"),
@@ -132,12 +176,61 @@ impl RenderState {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        // TODO: this needs to dynamicall change with screen size
+        // Build jump sequence: 8192, 4096, ..., 1
+        let mut jumps: Vec<f32> = Vec::new();
+        let mut j = 1024u32;
+        while j >= 1 {
+            jumps.push(j as f32);
+            if j == 1 {
+                break;
+            }
+            j /= 2;
+        }
+
+        let jfa_jump_values_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("JFA Jump Values Buffer"),
+            contents: bytemuck::cast_slice(&jumps),
+            usage: wgpu::BufferUsages::COPY_SRC,
+        });
+
+        // Offset of jump_size in ShaderConfig (11th f32 field, zero-based index 10)
+        let shader_config_jump_offset_bytes = (10 * std::mem::size_of::<f32>()) as u64;
+
+        // TODO: make it obvious what each component of the color at a pixel is (x, y, valid, None) and such
+        // TODO: fix duplication of texture format and of texture usage
+        // texture buffers
+        let jfa_texture_desc = wgpu::TextureDescriptor {
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            label: None,
+            view_formats: &[],
+        };
+        // Ping/pong textures:
+        let jfa_texture_a = device.create_texture(&jfa_texture_desc);
+        let jfa_texture_b = device.create_texture(&jfa_texture_desc);
+        let jfa_texture_a_view = jfa_texture_a.create_view(&Default::default());
+        let jfa_texture_b_view = jfa_texture_b.create_view(&Default::default());
+
+        // Setting Bind Group Layout (buffer layout)
+        //
         // A bind group layout describes the types of resources that a bind group can contain. Think
         // of this like a C-style header declaration, ensuring both the pipeline and bind group agree
         // on the types of resources.
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
+                // grid_cell_keys @binding(0)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -148,6 +241,7 @@ impl RenderState {
                     },
                     count: None,
                 },
+                // grid_cell_vals @binding(1)
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -158,6 +252,7 @@ impl RenderState {
                     },
                     count: None,
                 },
+                // grid_stops @binding(2)
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -168,6 +263,7 @@ impl RenderState {
                     },
                     count: None,
                 },
+                // config @binding(3)
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -181,11 +277,125 @@ impl RenderState {
             ],
         });
 
+        let jfa_seed_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("JFA Seed Bind Group Layout"),
+                entries: &[
+                    // grid_stops @binding(0)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // config @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // seed_out @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let jfa_step_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("JFA Step Bind Group Layout"),
+                entries: &[
+                    // prev_texture @binding(0)
+                    // (read only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    // next_texture @binding(1)
+                    // (write only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    // config @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let jfa_render_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("JFA Render Bind Group Layout"),
+                entries: &[
+                    // jfa texture @binding(0)
+                    // (read only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // config @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        // Putting Buffers into Bind Layout
+        //
         // The bind group contains the actual resources to bind to the pipeline.
         //
         // Even when the buffers are individually dropped, wgpu will keep the bind group and buffers
         // alive until the bind group itself is dropped.
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &bind_group_layout,
             entries: &[
@@ -208,6 +418,174 @@ impl RenderState {
             ],
         });
 
+        let jfa_seed_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Seed Bind Group"),
+            layout: &jfa_seed_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+            ],
+        });
+
+        // Bind group for reading from texture_a and writing to texture_b
+        let jfa_step_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group A"),
+            layout: &jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Bind group for reading from texture_b and writing to texture_a
+        let jfa_step_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group B"),
+            layout: &jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let jfa_render_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Render Bind Group A"),
+            layout: &jfa_render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let jfa_render_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Render Bind Group B"),
+            layout: &jfa_render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // JFA Seed Pipeline
+        let jfa_seed_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/seed_scatter.wgsl"));
+
+        let jfa_seed_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("JFA Seed Pipeline Layout"),
+                bind_group_layouts: &[&jfa_seed_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let jfa_seed_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("JFA Seed Pipeline"),
+            layout: Some(&jfa_seed_pipeline_layout),
+            module: &jfa_seed_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // JFA Step Pipeline
+        // Compute Pipeline
+        let jfa_step_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/jfa_step.wgsl"));
+
+        let jfa_step_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("JFA Step Pipeline Layout"),
+                bind_group_layouts: &[&jfa_step_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let jfa_step_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("JFA Step Pipeline"),
+            layout: Some(&jfa_step_pipeline_layout),
+            module: &jfa_step_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // JFA Render Pipeline
+        let jfa_render_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/render.wgsl"));
+
+        let jfa_render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("JFA Render Pipeline Layout"),
+                bind_group_layouts: &[&jfa_render_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let jfa_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("JFA Render Pipeline"),
+            layout: Some(&jfa_render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &jfa_render_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &jfa_render_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // Render Pipeline
         let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/shader.wgsl"));
 
         let render_pipeline_layout =
@@ -268,11 +646,39 @@ impl RenderState {
             device,
             queue,
             config,
+
+            num_stops: gpu_grid_stops.len() as u32,
+
+            gpu_grid_stops_buffer,
+
+            jfa_seed_pipeline,
+            jfa_seed_bind_group,
+            jfa_seed_bind_group_layout,
+
+            jfa_step_pipeline,
+            jfa_step_bind_group_a,
+            jfa_step_bind_group_b,
+            jfa_step_bind_group_layout,
+
+            jfa_render_pipeline,
+            jfa_render_bind_group_a,
+            jfa_render_bind_group_b,
+            jfa_render_bind_group_layout,
+
             render_pipeline,
-            bind_group,
+            render_bind_group,
 
             shader_config,
             shader_config_buffer,
+
+            jfa_texture_a,
+            jfa_texture_b,
+            jfa_texture_a_view,
+            jfa_texture_b_view,
+
+            jfa_jump_values_buffer,
+            jfa_jump_count: jumps.len() as u32,
+            shader_config_jump_offset_bytes,
         }
     }
 
@@ -311,7 +717,7 @@ impl RenderState {
 
         // pixel -> normalized
         let u = x / w; // left..right
-        let v = 1.0 - (y / h); // bottom..top (since map has north as up)
+        let v = y / h; // bottom..top (since map has north as up)
 
         // world under cursor before zoom
         let world_lon = min_lon + u * lon_span;
@@ -362,8 +768,8 @@ impl RenderState {
 
         // drag down should move map down on screen:
         // world lat decreases when moving down
-        self.shader_config.bbox_min_lat -= dlat;
-        self.shader_config.bbox_max_lat -= dlat;
+        self.shader_config.bbox_min_lat += dlat;
+        self.shader_config.bbox_max_lat += dlat;
 
         self.upload_shader_config();
     }
@@ -389,10 +795,129 @@ impl RenderState {
             self.shader_config.width = new_size.width as f32;
             self.shader_config.height = new_size.height as f32;
             self.upload_shader_config();
+
+            self.recreate_jfa_textures_and_bind_groups();
         }
     }
 
-    fn render(&self) -> Result<(), wgpu::SurfaceError> {
+    // TODO: this functions is bad and ugly. i would like to swap it for a much simpler solution if possible
+    /// recreates textures and bind groups for the jump flood algorithm. Needed when resizing, because texture changes size.
+    fn recreate_jfa_textures_and_bind_groups(&mut self) {
+        let jfa_texture_desc = wgpu::TextureDescriptor {
+            size: wgpu::Extent3d {
+                width: self.config.width,
+                height: self.config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            label: None,
+            view_formats: &[],
+        };
+
+        self.jfa_texture_a = self.device.create_texture(&jfa_texture_desc);
+        self.jfa_texture_b = self.device.create_texture(&jfa_texture_desc);
+        self.jfa_texture_a_view = self.jfa_texture_a.create_view(&Default::default());
+        self.jfa_texture_b_view = self.jfa_texture_b.create_view(&Default::default());
+
+        // Seed bind group (writes into texture_a)
+        self.jfa_seed_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Seed Bind Group"),
+            layout: &self.jfa_seed_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+            ],
+        });
+
+        // Step bind group A -> reads texture_a, writes texture_b
+        self.jfa_step_bind_group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group A"),
+            layout: &self.jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Step bind group B -> read texture_b, writes texture_a
+        self.jfa_step_bind_group_b = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group B"),
+            layout: &self.jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Render bind groups (sampling)
+        self.jfa_render_bind_group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Render Bind Group A"),
+            layout: &self.jfa_render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.jfa_render_bind_group_b = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Render Bind Group B"),
+            layout: &self.jfa_render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+    }
+
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -403,31 +928,134 @@ impl RenderState {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
+            // JFA Seed Pass
+            {
+                encoder.clear_texture(&self.jfa_texture_a, &wgpu::ImageSubresourceRange::default());
+                // encoder.clear_texture(&self.jfa_texture_b, &wgpu::ImageSubresourceRange::default());
 
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..3, 0..1);
+                let mut jfa_seed_compute_pass =
+                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("Seed Compute Pass"),
+                        timestamp_writes: None,
+                    });
+
+                jfa_seed_compute_pass.set_pipeline(&self.jfa_seed_pipeline);
+                jfa_seed_compute_pass.set_bind_group(0, &self.jfa_seed_bind_group, &[]);
+
+                let wg = 256u32;
+                let n = self.num_stops; // store this somewhere
+                let dispatch_x = (n + wg - 1) / wg;
+                jfa_seed_compute_pass.dispatch_workgroups(dispatch_x, 1, 1);
+            }
+
+            // JFA Step Passes
+            let final_texture_render_bind_group: &wgpu::BindGroup;
+            {
+                // flips read/write between texture_a and texture_b
+                // false -> read texture_a, write texture_b
+                // true -> read texture_b, write texture_a
+                let mut flip = false;
+
+                for jump_size_index in 0..self.jfa_jump_count {
+                    // Copy one f32 jump value into ShaderConfig.jump_size
+                    let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
+                    encoder.copy_buffer_to_buffer(
+                        &self.jfa_jump_values_buffer,
+                        src_offset,
+                        &self.shader_config_buffer,
+                        self.shader_config_jump_offset_bytes,
+                        std::mem::size_of::<f32>() as u64,
+                    );
+
+                    let mut jfa_step_compute_pass =
+                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("Seed Compute Pass"),
+                            timestamp_writes: None,
+                        });
+
+                    jfa_step_compute_pass.set_pipeline(&self.jfa_step_pipeline);
+                    if flip {
+                        jfa_step_compute_pass.set_bind_group(0, &self.jfa_step_bind_group_b, &[]);
+                    } else {
+                        jfa_step_compute_pass.set_bind_group(0, &self.jfa_step_bind_group_a, &[]);
+                    }
+
+                    let wg_size_x = 16u32;
+                    let wg_size_y = 16u32;
+
+                    let dispatch_x = (self.config.width + wg_size_x - 1) / wg_size_x;
+                    let dispatch_y = (self.config.height + wg_size_y - 1) / wg_size_y;
+
+                    jfa_step_compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+
+                    flip = !flip;
+                }
+
+                // note: after loop, if flip is true -> then final texture is in texture_a (and its in texture_b otherwise)
+                final_texture_render_bind_group = if flip {
+                    &self.jfa_render_bind_group_a
+                } else {
+                    &self.jfa_render_bind_group_b
+                };
+            }
+
+            // final_texture_render_bind_group = &self.jfa_render_bind_group_a;
+
+            // Render Pass
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("JFA Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.1,
+                                g: 0.2,
+                                b: 0.3,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+
+                render_pass.set_pipeline(&self.jfa_render_pipeline);
+                render_pass.set_bind_group(0, final_texture_render_bind_group, &[]);
+                render_pass.draw(0..3, 0..1);
+            }
+            // {
+            //     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            //         label: Some("Render Pass"),
+            //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            //             view: &view,
+            //             resolve_target: None,
+            //             ops: wgpu::Operations {
+            //                 load: wgpu::LoadOp::Clear(wgpu::Color {
+            //                     r: 0.1,
+            //                     g: 0.2,
+            //                     b: 0.3,
+            //                     a: 1.0,
+            //                 }),
+            //                 store: wgpu::StoreOp::Store,
+            //             },
+            //             depth_slice: None,
+            //         })],
+            //         depth_stencil_attachment: None,
+            //         occlusion_query_set: None,
+            //         timestamp_writes: None,
+            //         multiview_mask: None,
+            //     });
+
+            //     render_pass.set_pipeline(&self.render_pipeline);
+            //     render_pass.set_bind_group(0, &self.render_bind_group, &[]);
+            //     render_pass.draw(0..3, 0..1);
+            // }
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -475,20 +1103,9 @@ impl App {
             ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
         };
 
-        let mut stop_positions: Vec<[f32; 3]> = Vec::new();
-        for stop in gtfs_data.stops.values() {
-            if let Some(&arrival_time) = arrival_times.get(&stop.stop_id) {
-                stop_positions.push([
-                    stop.position.lat as f32,
-                    stop.position.lon as f32,
-                    arrival_time as f32,
-                ]);
-            }
-        }
-
         // TODO: replace max_time with actual processing stage to calculate it
         let begin_time = DEPART_INSTANT.time;
-        let max_time = DEPART_INSTANT.time + 18000; // shitty hack to make it display SOMETHING
+        let max_time = DEPART_INSTANT.time + 36000; // shitty hack to make it display SOMETHING
 
         let shader_config = ShaderConfig {
             width: pixels_width as f32,
@@ -500,7 +1117,8 @@ impl App {
             gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
             begin_time: begin_time as f32,
             max_time: max_time as f32,
-            walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
+            inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
+            jump_size: 0.0, // gets overwritten later
         };
 
         let (gpu_grid_cell_keys, gpu_grid_cell_vals) = build_gpu_hash(&gpu_grid_cells);
@@ -651,7 +1269,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(state) = &self.render_state {
+                if let Some(state) = &mut self.render_state {
                     match state.render() {
                         Ok(()) => {}
                         // Reconfigure if the surface is lost
