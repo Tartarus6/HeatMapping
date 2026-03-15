@@ -5,13 +5,15 @@ use std::sync::Arc;
 
 use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED};
 
-use wgpu::{BufferUsages, util::DeviceExt};
+use wgpu::{BufferUsages, Texture, TextureView, util::DeviceExt};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
+
+// TODO: add a scale reference (like google maps has) showing how zoomed in the view is
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -50,11 +52,18 @@ struct RenderState {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+
+    seed_compute_pipeline: wgpu::ComputePipeline,
+    seed_compute_bind_group: wgpu::BindGroup,
+
     render_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
 
     shader_config: ShaderConfig,        // CPU-side copy
     shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+
+    seed_texture: wgpu::Texture,
+    seed_texture_view: wgpu::TextureView,
 }
 
 impl RenderState {
@@ -106,6 +115,7 @@ impl RenderState {
         };
         surface.configure(&device, &config);
 
+        // Initializing Buffers
         let gpu_grid_cell_keys_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("GPU Grid Cell Keys Buffer"),
@@ -132,12 +142,35 @@ impl RenderState {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        // texture buffers
+        let seed_texture_desc = wgpu::TextureDescriptor {
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Sint,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            label: None,
+            view_formats: &[],
+        };
+        let seed_texture = device.create_texture(&seed_texture_desc);
+        let seed_texture_view = seed_texture.create_view(&Default::default());
+
+        // Setting Bind Group Layout (buffer layout)
+        //
         // A bind group layout describes the types of resources that a bind group can contain. Think
         // of this like a C-style header declaration, ensuring both the pipeline and bind group agree
         // on the types of resources.
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
+                // grid_cell_keys @binding(0)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -148,6 +181,7 @@ impl RenderState {
                     },
                     count: None,
                 },
+                // grid_cell_vals @binding(1)
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -158,6 +192,7 @@ impl RenderState {
                     },
                     count: None,
                 },
+                // grid_stops @binding(2)
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -168,6 +203,7 @@ impl RenderState {
                     },
                     count: None,
                 },
+                // config @binding(3)
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -181,6 +217,48 @@ impl RenderState {
             ],
         });
 
+        let seed_compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Seed Bind Group Layout"),
+                entries: &[
+                    // grid_stops @binding(0)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // config @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // seed_out @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba32Sint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        // Putting Buffers into Bind Layout
+        //
         // The bind group contains the actual resources to bind to the pipeline.
         //
         // Even when the buffers are individually dropped, wgpu will keep the bind group and buffers
@@ -208,6 +286,47 @@ impl RenderState {
             ],
         });
 
+        let seed_compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &seed_compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&seed_texture_view),
+                },
+            ],
+        });
+
+        // Compute Pipeling
+        let seed_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/seed_scatter.wgsl"));
+
+        let seed_compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Compute Pipeline Layout"),
+                bind_group_layouts: &[&seed_compute_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let seed_compute_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Compute Pipeline"),
+                layout: Some(&seed_compute_pipeline_layout),
+                module: &seed_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
+        // Render Pipeline
         let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/shader.wgsl"));
 
         let render_pipeline_layout =
@@ -268,11 +387,18 @@ impl RenderState {
             device,
             queue,
             config,
+
+            seed_compute_pipeline,
+            seed_compute_bind_group,
+
             render_pipeline,
             bind_group,
 
             shader_config,
             shader_config_buffer,
+
+            seed_texture,
+            seed_texture_view,
         }
     }
 
@@ -403,31 +529,54 @@ impl RenderState {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
+            // Seed Compute Pass
+            {
+                let mut seed_compute_pass =
+                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("Seed Compute Pass"),
+                        timestamp_writes: None,
+                    });
 
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..3, 0..1);
+                seed_compute_pass.set_pipeline(&self.seed_compute_pipeline);
+                seed_compute_pass.set_bind_group(0, &self.seed_compute_bind_group, &[]);
+
+                let wg_size_x = 16u32;
+                let wg_size_y = 16u32;
+
+                let dispatch_x = (self.config.width + wg_size_x - 1) / wg_size_x;
+                let dispatch_y = (self.config.height + wg_size_y - 1) / wg_size_y;
+
+                seed_compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+            }
+
+            // Render Pass
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.1,
+                                g: 0.2,
+                                b: 0.3,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+
+                render_pass.set_pipeline(&self.render_pipeline);
+                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.draw(0..3, 0..1);
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -488,7 +637,7 @@ impl App {
 
         // TODO: replace max_time with actual processing stage to calculate it
         let begin_time = DEPART_INSTANT.time;
-        let max_time = DEPART_INSTANT.time + 18000; // shitty hack to make it display SOMETHING
+        let max_time = DEPART_INSTANT.time + 36000; // shitty hack to make it display SOMETHING
 
         let shader_config = ShaderConfig {
             width: pixels_width as f32,
