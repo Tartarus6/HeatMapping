@@ -54,7 +54,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    textureStore(next_texture, point, vec4<f32>(best.xyz, 1.0));
+    textureStore(next_texture, point, vec4<f32>(best.xy, best.z, 1.0));
 }
 
 fn in_bounds(point: vec2<i32>) -> bool {

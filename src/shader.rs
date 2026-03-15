@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED};
 
+use tracing::{info_span, instrument};
 use wgpu::{BufferUsages, Texture, TextureView, util::DeviceExt};
 use winit::{
     application::ApplicationHandler,
@@ -72,9 +73,6 @@ struct RenderState {
     jfa_render_bind_group_b: wgpu::BindGroup,
     jfa_render_bind_group_layout: wgpu::BindGroupLayout,
 
-    render_pipeline: wgpu::RenderPipeline,
-    render_bind_group: wgpu::BindGroup,
-
     shader_config: ShaderConfig,        // CPU-side copy
     shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
 
@@ -120,7 +118,7 @@ impl RenderState {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::CLEAR_TEXTURE,
+                required_features: wgpu::Features::CLEAR_TEXTURE | wgpu::Features::TIMESTAMP_QUERY,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::default(),
                 experimental_features: wgpu::ExperimentalFeatures::default(),
@@ -224,56 +222,6 @@ impl RenderState {
         // A bind group layout describes the types of resources that a bind group can contain. Think
         // of this like a C-style header declaration, ensuring both the pipeline and bind group agree
         // on the types of resources.
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                // grid_cell_keys @binding(0)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // grid_cell_vals @binding(1)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // grid_stops @binding(2)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // config @binding(3)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
         let jfa_seed_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("JFA Seed Bind Group Layout"),
@@ -392,29 +340,6 @@ impl RenderState {
         //
         // Even when the buffers are individually dropped, wgpu will keep the bind group and buffers
         // alive until the bind group itself is dropped.
-        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: gpu_grid_cell_keys_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: gpu_grid_cell_vals_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: shader_config_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
         let jfa_seed_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("JFA Seed Bind Group"),
             layout: &jfa_seed_bind_group_layout,
@@ -582,62 +507,6 @@ impl RenderState {
             cache: None,
         });
 
-        // Render Pipeline
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/shader.wgsl"));
-
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
-            });
-
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: None,
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: None,
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState {
-                        alpha: wgpu::BlendComponent::REPLACE,
-                        color: wgpu::BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-                polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
-                unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            // If the pipeline will be used with a multiview render pass, this
-            // tells wgpu to render to just specific texture layers.
-            multiview_mask: None,
-            cache: None,
-        });
-
         Self {
             surface,
             device,
@@ -661,9 +530,6 @@ impl RenderState {
             jfa_render_bind_group_a,
             jfa_render_bind_group_b,
             jfa_render_bind_group_layout,
-
-            render_pipeline,
-            render_bind_group,
 
             shader_config,
             shader_config_buffer,
@@ -914,7 +780,10 @@ impl RenderState {
         });
     }
 
+    #[instrument(skip(self))]
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let _span = info_span!("frame").entered();
+
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -927,6 +796,8 @@ impl RenderState {
         {
             // JFA Seed Pass
             {
+                let _s = info_span!("jfa_seed_encode").entered();
+
                 encoder.clear_texture(&self.jfa_texture_a, &wgpu::ImageSubresourceRange::default());
                 // encoder.clear_texture(&self.jfa_texture_b, &wgpu::ImageSubresourceRange::default());
 
@@ -954,6 +825,8 @@ impl RenderState {
                 let mut flip = false;
 
                 for jump_size_index in 0..self.jfa_jump_count {
+                    let _s = info_span!("jfa_steps_encode").entered();
+
                     // Copy one f32 jump value into ShaderConfig.jump_size
                     let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
                     encoder.copy_buffer_to_buffer(
@@ -1000,6 +873,8 @@ impl RenderState {
 
             // Render Pass
             {
+                let _s = info_span!("final_render_encode").entered();
+
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("JFA Render Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1026,33 +901,6 @@ impl RenderState {
                 render_pass.set_bind_group(0, final_texture_render_bind_group, &[]);
                 render_pass.draw(0..3, 0..1);
             }
-            // {
-            //     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            //         label: Some("Render Pass"),
-            //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            //             view: &view,
-            //             resolve_target: None,
-            //             ops: wgpu::Operations {
-            //                 load: wgpu::LoadOp::Clear(wgpu::Color {
-            //                     r: 0.1,
-            //                     g: 0.2,
-            //                     b: 0.3,
-            //                     a: 1.0,
-            //                 }),
-            //                 store: wgpu::StoreOp::Store,
-            //             },
-            //             depth_slice: None,
-            //         })],
-            //         depth_stencil_attachment: None,
-            //         occlusion_query_set: None,
-            //         timestamp_writes: None,
-            //         multiview_mask: None,
-            //     });
-
-            //     render_pass.set_pipeline(&self.render_pipeline);
-            //     render_pass.set_bind_group(0, &self.render_bind_group, &[]);
-            //     render_pass.draw(0..3, 0..1);
-            // }
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -1316,6 +1164,8 @@ pub async fn run(
         bbox_min_position,
         bbox_max_position,
     );
+
+    tracing_subscriber::fmt().with_env_filter("info").init();
 
     event_loop.run_app(&mut app).unwrap();
 }
