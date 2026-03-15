@@ -182,9 +182,6 @@ impl RenderState {
         let mut j = 1024u32;
         while j >= 1 {
             jumps.push(j as f32);
-            if j == 1 {
-                break;
-            }
             j /= 2;
         }
 

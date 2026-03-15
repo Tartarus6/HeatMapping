@@ -55,6 +55,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
 
     let c: vec4f = textureLoad(jfa_tex, vec2i(xy), 0);
 
+    let uniform_arrival_time = (c.z - config.begin_time) / (config.max_time - config.begin_time);
+
     // return vec4f(c.rg / vec2(config.width, config.height), c.b, 1.0);
-    return vec4f(c.b, c.b, c.b, 1.0);
+    return vec4f(uniform_arrival_time, uniform_arrival_time, uniform_arrival_time, 1.0);
 }

@@ -24,24 +24,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let point = vec2<i32>(i32(gid.x), i32(gid.y));
 
     // current best (from prev_texture)
-    var best = load_seed(point);
+    var best = vec4<f32>(0, 0, 0, 0);
     var bestDist = 1e30; // initialize to high value to override later
-
-    if best.z != 0.0 {
-        let delta = vec2<f32>(best.x - f32(point.x), best.y - f32(point.y));
-
-        bestDist = dot(delta, delta);
-    }
 
     // TODO: is there a fancier, better way to iterate through the 9 neighbors?
     // check 8 neighbors at distance jump
     for (var dx = -1; dx <= 1; dx++) {
         for (var dy = -1; dy <= 1; dy++) {
-            // skip self cell (only doing neighbors)
-            if dx == 0 && dy == 0 {
-                continue;
-            }
-
             let neighbor_point = point + vec2<i32>(dx * i32(config.jump_size), dy * i32(config.jump_size));
 
             // skip if neighbor not in bounds

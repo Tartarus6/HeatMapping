@@ -61,10 +61,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         (1.0 - stop_uv.x) * config.height
     );
 
-    // TODO: switch to storing arrival time in seed texture
-    textureStore(
-        out_texture,
-        vec2<i32>(i32(stop_xy.x), i32(stop_xy.y)),
-        vec4<f32>(stop_xy.x, stop_xy.y, (stop.z - config.begin_time) / (config.max_time - config.begin_time), 1.0)
-    );
+    for (var dx = -1; dx <= 1; dx++) {
+        for (var dy = -1; dy <= 1; dy++) {
+            textureStore(
+                out_texture,
+                vec2<i32>(i32(stop_xy.x) + dx, i32(stop_xy.y) + dy),
+                vec4<f32>(stop_xy.xy, stop.z, 1.0)
+            );
+        }
+    }
 }
