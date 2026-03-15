@@ -24,17 +24,22 @@ struct ShaderConfig {
     gpu_grid_cell_size: f32, // size of each cell (in radians)
     begin_time: f32,         // departure time in seconds since midnight
     // TODO: fix max time
-    max_time: f32, // latest arrival time in seconds since midnight
-    inverse_walk_speed_mps: f32, // walking speed in meters per second
+    max_time: f32,               // latest arrival time in seconds since midnight
+    inverse_walk_speed_mps: f32, // walking speed in seconds per meter
+    jump_size: f32,              // jump size for JFA
 }
 
 /// [lat, lon, arrival_time, None]
 @group(0) @binding(0) var<storage, read> grid_stops: array<vec4<f32>>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
-@group(0) @binding(2) var seedTex: texture_storage_2d<rgba32sint, write>;
+@group(0) @binding(2) var out_texture: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    // if gid.x == 0u {
+    //     textureStore(out_texture, vec2i(10, 10), vec4f(1.0, 1.0, 1.0, 1.0));
+    // }
+
     let i = gid.x;
     if i >= arrayLength(&grid_stops) { return; }
 
@@ -43,25 +48,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let stop = grid_stops[i];
 
-    // normalized in[0,1]
-    let stop_uv = (vec2(stop.x, stop.y) - bounding_box_min) / (bounding_box_max - bounding_box_min);
+    // stop position (normalized where [0,1] is within bounding box)
+    let stop_uv = (stop.xy - bounding_box_min) / (bounding_box_max - bounding_box_min);
 
-    // convert to pixel coords (float)
-    // Careful: decide your exact orientation once.
-    // Example: lat -> y, lon -> x is common:
+    // TODO: stops some distance around the bounding box should be included, since they might still be the fastest way to somewhere in the bounding box
+    // cull stop if not within bounding box
+    if 0 > stop_uv.x || stop_uv.x > 1 || 0 > stop_uv.y || stop_uv.y > 1 { return; }
+
+    // stop poitions (float pixel coordinates)
     let stop_xy = vec2<f32>(
         stop_uv.y * config.width,
-        stop_uv.x * config.height
+        (1.0 - stop_uv.x) * config.height
     );
 
-    if stop.x >= config.width || stop.y >= config.height { return; }
-
-    // Write the seed coordinate at that pixel.
-    // For init pass, the value is the seed’s own coordinate.
-    // seedTex is rg32sint, but textureStore expects a vec4<i32> value.
+    // TODO: switch to storing arrival time in seed texture
     textureStore(
-        seedTex,
+        out_texture,
         vec2<i32>(i32(stop_xy.x), i32(stop_xy.y)),
-        vec4<i32>(i32(stop_xy.x), i32(stop_xy.y), i32(stop.z), 0)
+        vec4<f32>(stop_xy.x, stop_xy.y, (stop.z - config.begin_time) / (config.max_time - config.begin_time), 1.0)
     );
 }

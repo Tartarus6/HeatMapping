@@ -24,8 +24,12 @@ struct ShaderConfig {
     gpu_grid_cell_size: f32, // size of each cell (in radians)
     begin_time: f32,         // departure time in seconds since midnight
     // TODO: fix max time
-    max_time: f32, // latest arrival time in seconds since midnight
-    inverse_walk_speed_mps: f32, // walking speed in meters per second
+    max_time: f32,               // latest arrival time in seconds since midnight
+    inverse_walk_speed_mps: f32, // walking speed in seconds per meter
+    jump_size: u32,              // jump size for JFA
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> grid_cell_keys: array<GpuGridCellKey>;
