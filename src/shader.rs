@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED};
 
 use tracing::{info_span, instrument};
-use wgpu::{BufferUsages, Texture, TextureView, util::DeviceExt};
+use wgpu::{BufferUsages, SurfaceTexture, util::DeviceExt};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
@@ -81,11 +81,14 @@ struct RenderState {
     jfa_texture_a_view: wgpu::TextureView,
     jfa_texture_b_view: wgpu::TextureView,
 
-    // NEW: staged jump values, copied into shader_config_buffer each pass
     jfa_jump_values_buffer: wgpu::Buffer,
     jfa_jump_count: u32,
     // byte offset of `jump_size` field inside ShaderConfig
     shader_config_jump_offset_bytes: u64,
+
+    timestamp_query_set: wgpu::QuerySet,
+    timestamp_resolve_buffer: wgpu::Buffer,
+    timestamp_readback_buffer: wgpu::Buffer,
 }
 
 impl RenderState {
@@ -191,6 +194,34 @@ impl RenderState {
 
         // Offset of jump_size in ShaderConfig (11th f32 field, zero-based index 10)
         let shader_config_jump_offset_bytes = (10 * std::mem::size_of::<f32>()) as u64;
+
+        // We record 2 timestamps per pass: begin/end.
+        // Passes: seed + each jfa step + final render.
+        let timestamp_pass_count = 1 + (jumps.len() as u32) + 1; // seed + steps + render
+        let timestamp_query_count = timestamp_pass_count * 2;
+
+        let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("Frame Timestamp Query Set"),
+            ty: wgpu::QueryType::Timestamp,
+            count: timestamp_query_count,
+        });
+
+        let timestamp_buffer_size =
+            (timestamp_query_count as u64) * std::mem::size_of::<u64>() as u64;
+
+        let timestamp_resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Timestamp Resolve Buffer"),
+            size: timestamp_buffer_size,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let timestamp_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Timestamp Readback Buffer"),
+            size: timestamp_buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
 
         // TODO: make it obvious what each component of the color at a pixel is (x, y, valid, None) and such
         // TODO: fix duplication of texture format and of texture usage
@@ -542,6 +573,10 @@ impl RenderState {
             jfa_jump_values_buffer,
             jfa_jump_count: jumps.len() as u32,
             shader_config_jump_offset_bytes,
+
+            timestamp_query_set,
+            timestamp_resolve_buffer,
+            timestamp_readback_buffer,
         }
     }
 
@@ -784,28 +819,30 @@ impl RenderState {
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let _span = info_span!("frame").entered();
 
-        let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut q = 0u32; // query index for gpu timers
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let output = self.surface.get_current_texture()?;
 
         {
             // JFA Seed Pass
             {
-                let _s = info_span!("jfa_seed_encode").entered();
-
                 encoder.clear_texture(&self.jfa_texture_a, &wgpu::ImageSubresourceRange::default());
                 // encoder.clear_texture(&self.jfa_texture_b, &wgpu::ImageSubresourceRange::default());
 
                 let mut jfa_seed_compute_pass =
                     encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("Seed Compute Pass"),
-                        timestamp_writes: None,
+                        timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                            query_set: &self.timestamp_query_set,
+                            beginning_of_pass_write_index: Some(q),
+                            end_of_pass_write_index: Some(q + 1),
+                        }),
                     });
+
+                q += 2; // increment q for seed enter and close
 
                 jfa_seed_compute_pass.set_pipeline(&self.jfa_seed_pipeline);
                 jfa_seed_compute_pass.set_bind_group(0, &self.jfa_seed_bind_group, &[]);
@@ -825,8 +862,6 @@ impl RenderState {
                 let mut flip = false;
 
                 for jump_size_index in 0..self.jfa_jump_count {
-                    let _s = info_span!("jfa_steps_encode").entered();
-
                     // Copy one f32 jump value into ShaderConfig.jump_size
                     let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
                     encoder.copy_buffer_to_buffer(
@@ -840,8 +875,14 @@ impl RenderState {
                     let mut jfa_step_compute_pass =
                         encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                             label: Some("Seed Compute Pass"),
-                            timestamp_writes: None,
+                            timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                                query_set: &self.timestamp_query_set,
+                                beginning_of_pass_write_index: Some(q),
+                                end_of_pass_write_index: Some(q + 1),
+                            }),
                         });
+
+                    q += 2; // increment q for step enter and close
 
                     jfa_step_compute_pass.set_pipeline(&self.jfa_step_pipeline);
                     if flip {
@@ -873,7 +914,9 @@ impl RenderState {
 
             // Render Pass
             {
-                let _s = info_span!("final_render_encode").entered();
+                let view = output
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
 
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("JFA Render Pass"),
@@ -893,9 +936,15 @@ impl RenderState {
                     })],
                     depth_stencil_attachment: None,
                     occlusion_query_set: None,
-                    timestamp_writes: None,
+                    timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
+                        query_set: &self.timestamp_query_set,
+                        beginning_of_pass_write_index: Some(q),
+                        end_of_pass_write_index: Some(q + 1),
+                    }),
                     multiview_mask: None,
                 });
+
+                q += 2; // increment q for render enter and close
 
                 render_pass.set_pipeline(&self.jfa_render_pipeline);
                 render_pass.set_bind_group(0, final_texture_render_bind_group, &[]);
@@ -903,8 +952,54 @@ impl RenderState {
             }
         }
 
+        encoder.resolve_query_set(
+            &self.timestamp_query_set,
+            0..q,
+            &self.timestamp_resolve_buffer,
+            0,
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.timestamp_resolve_buffer,
+            0,
+            &self.timestamp_readback_buffer,
+            0,
+            (q as u64) * std::mem::size_of::<u64>() as u64,
+        );
+
         self.queue.submit(Some(encoder.finish()));
         output.present();
+
+        // Wait for GPU to complete this submission (simple/minimal approach)
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+
+        // Map and read timestamps
+        let slice = self.timestamp_readback_buffer.slice(..(q as u64 * 8));
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+
+        let data = slice.get_mapped_range();
+        let timestamps: &[u64] = bytemuck::cast_slice(&data);
+
+        // Convert ticks -> ns
+        let period_ns = self.queue.get_timestamp_period() as f64;
+
+        // Example logging:
+        // pair 0 = seed, next pairs = steps, last pair = render
+        for i in 0..(q / 2) as usize {
+            let t0 = timestamps[2 * i] as f64;
+            let t1 = timestamps[2 * i + 1] as f64;
+            let dt_ns = (t1 - t0) * period_ns;
+            println!("gpu pass[{i}] = {:.3} ms", dt_ns / 1_000_000.0);
+        }
+
+        drop(data);
+        self.timestamp_readback_buffer.unmap();
 
         Ok(())
     }
@@ -1164,8 +1259,6 @@ pub async fn run(
         bbox_min_position,
         bbox_max_position,
     );
-
-    tracing_subscriber::fmt().with_env_filter("info").init();
 
     event_loop.run_app(&mut app).unwrap();
 }

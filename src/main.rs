@@ -57,6 +57,13 @@ const CACHE_DIRECTORY: &str = "./cache/";
 const GTFS_DIRECTORY: &str = "./src/lib/GTFS/";
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_span_events(
+            tracing_subscriber::fmt::format::FmtSpan::ENTER
+                | tracing_subscriber::fmt::format::FmtSpan::CLOSE,
+        )
+        .init();
+
     let now = Instant::now();
 
     // Gtfs data initialization
