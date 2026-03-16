@@ -32,14 +32,18 @@ struct ShaderConfig {
 /// [lat, lon, arrival_time, None]
 @group(0) @binding(0) var<storage, read> grid_stops: array<vec4<f32>>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
-@group(0) @binding(2) var out_texture: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var out_texture: texture_storage_2d<r32uint, write>;
+
+// TODO: use invalid seed
+const INVALID_SEED: u32 = 0xffffffffu;
+
+fn pack_xy_u16(x: u32, y: u32) -> u32 {
+    // low 16 bits = x, high 16 bits = y
+    return (x & 0xffffu) | ((y & 0xffffu) << 16u);
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    // if gid.x == 0u {
-    //     textureStore(out_texture, vec2i(10, 10), vec4f(1.0, 1.0, 1.0, 1.0));
-    // }
-
     let i = gid.x;
     if i >= arrayLength(&grid_stops) { return; }
 
@@ -56,17 +60,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if 0 > stop_uv.x || stop_uv.x > 1 || 0 > stop_uv.y || stop_uv.y > 1 { return; }
 
     // stop poitions (float pixel coordinates)
-    let stop_xy = vec2<f32>(
-        stop_uv.y * config.width,
-        (1.0 - stop_uv.x) * config.height
-    );
+    let stop_x = u32(stop_uv.y * config.width);
+    let stop_y = u32((1.0 - stop_uv.x) * config.height);
+
+    // Note: if dimensions ever exceed 65535, packing breaks
+    if stop_x > 65535u || stop_y > 65535u { return; }
+
+    let packed: vec4<u32> = vec4<u32>(pack_xy_u16(stop_x, stop_y), 0u, 0u, 0u);
 
     for (var dx = -1; dx <= 1; dx++) {
         for (var dy = -1; dy <= 1; dy++) {
+            let px: i32 = i32(stop_x) + dx;
+            let py: i32 = i32(stop_y) + dy;
+
+            // bounds guard
+            if px < 0 || py < 0 || px >= i32(config.width) || py >= i32(config.height) {
+                continue;
+            }
+
             textureStore(
                 out_texture,
-                vec2<i32>(i32(stop_xy.x) + dx, i32(stop_xy.y) + dy),
-                vec4<f32>(stop_xy.xy, stop.z, 1.0)
+                vec2<i32>(i32(stop_x) + dx, i32(stop_y) + dy),
+                packed
             );
         }
     }

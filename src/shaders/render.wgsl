@@ -40,8 +40,12 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
     return out;
 }
 
-@group(0) @binding(0) var jfa_tex: texture_2d<f32>;
+@group(0) @binding(0) var jfa_tex: texture_2d<u32>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
+
+fn unpack_xy(packed: u32) -> vec2<u32> {
+    return vec2(packed & 0xffffu, (packed >> 16u) & 0xffffu);
+}
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
@@ -53,10 +57,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // map uv in [0,1] to [0, dims-1]
     let xy: vec2u = min(vec2u(uv * vec2f(dims)), dims - vec2u(1u));
 
-    let c: vec4f = textureLoad(jfa_tex, vec2i(xy), 0);
+    let packed: u32 = textureLoad(jfa_tex, vec2i(xy), 0).x;
 
-    let uniform_arrival_time = (c.z - config.begin_time) / (config.max_time - config.begin_time);
+    let unpacked: vec2u = unpack_xy(packed);
+
+    // let uniform_arrival_time = (c.z - config.begin_time) / (config.max_time - config.begin_time);
 
     // return vec4f(c.rg / vec2(config.width, config.height), c.b, 1.0);
-    return vec4f(uniform_arrival_time, uniform_arrival_time, uniform_arrival_time, 1.0);
+    return vec4f(f32(unpacked.x) / config.width, f32(unpacked.y) / config.height, 0.0, 1.0);
 }

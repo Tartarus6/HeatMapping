@@ -30,7 +30,7 @@ struct GpuGridCellVal {
     count: u32,
 }
 
-// TODO: switch width, height, begin_time, and max_time to be u32
+// TODO: switch width, height, begin_time, max_time, and jump_size to be u32
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ShaderConfig {
@@ -235,7 +235,7 @@ impl RenderState {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
+            format: wgpu::TextureFormat::R32Uint,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST,
@@ -285,7 +285,7 @@ impl RenderState {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
+                            format: wgpu::TextureFormat::R32Uint,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -304,7 +304,7 @@ impl RenderState {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
+                            format: wgpu::TextureFormat::R32Uint,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -316,7 +316,7 @@ impl RenderState {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba16Float,
+                            format: wgpu::TextureFormat::R32Uint,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -345,7 +345,7 @@ impl RenderState {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            sample_type: wgpu::TextureSampleType::Uint,
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -710,7 +710,7 @@ impl RenderState {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
+            format: wgpu::TextureFormat::R32Uint,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST,
