@@ -1,14 +1,15 @@
 struct ShaderConfig {
-    width: f32,
-    height: f32,
+    width: f32,  // how many pixels wide the image is
+    height: f32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
     bbox_max_lon: f32,
-    gpu_grid_cell_size: f32,
-    begin_time: f32,
-    max_time: f32,
-    inverse_walk_speed_mps: f32,
+    gpu_grid_cell_size: f32, // size of each cell (in radians)
+    begin_time: f32,         // departure time in seconds since midnight
+    // TODO: fix max time
+    max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
+    inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }
 
 struct JFAConfig {

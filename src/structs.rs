@@ -1,6 +1,6 @@
 // This file contains all of the data structures used throughout the code
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::atomic};
 
 use serde::{Deserialize, Serialize};
 
@@ -258,8 +258,8 @@ pub struct ShaderConfig {
     pub gpu_grid_cell_size: f32, // size of each cell (in radians)
     pub begin_time: f32,         // departure time in seconds since midnight
     // TODO: fix max time
-    pub max_time: f32, // latest arrival time in seconds since midnight
-    pub inverse_walk_speed_mps: f32, // walking speed in seconds per meter
+    pub max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
+    pub inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }
 
 // TODO: switch width, height, and jump_size to be u32
@@ -272,6 +272,13 @@ pub struct JFAConfig {
     pub meters_per_px_x: f32, // approximate number of meters per x pixel
     pub meters_per_px_y: f32, // approximate number of meters per y pixel
 }
+
+// #[repr(C)]
+// #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+// pub struct MinMax {
+//     pub min_time: atomic<u32>,
+//     pub max_time: atomic<u32>,
+// }
 
 /// parses stop_id, handling both "600737" and "stoparea:600737" formats
 pub fn parse_stop_id(stop_id_str: &str) -> Result<u32, Box<dyn std::error::Error>> {

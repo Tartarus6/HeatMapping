@@ -39,6 +39,12 @@ pub struct RenderState {
     pub jfa_step_bind_group_b: wgpu::BindGroup,
     pub jfa_step_bind_group_layout: wgpu::BindGroupLayout,
 
+    pub minmax_pipeline: wgpu::ComputePipeline,
+    pub minmax_bind_group_layout: wgpu::BindGroupLayout,
+    pub minmax_bind_group_a: wgpu::BindGroup,
+    pub minmax_bind_group_b: wgpu::BindGroup,
+    pub minmax_buffer: wgpu::Buffer,
+
     pub jfa_render_pipeline: wgpu::RenderPipeline,
     pub jfa_render_bind_group_a: wgpu::BindGroup,
     pub jfa_render_bind_group_b: wgpu::BindGroup,
@@ -210,6 +216,13 @@ impl RenderState {
             mapped_at_creation: false,
         });
 
+        let minmax_init: [u32; 2] = [u32::MAX, 0];
+        let minmax_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("MinMax Buffer"),
+            contents: bytemuck::cast_slice(&minmax_init),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         // TODO: fix duplication of texture format and of texture usage
         // texture buffers
         let jfa_texture_desc = wgpu::TextureDescriptor {
@@ -355,6 +368,68 @@ impl RenderState {
                 ],
             });
 
+        let minmax_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("MinMax Bind Group Layout"),
+                entries: &[
+                    // jfa texture  @binding(0)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // shader_config  @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config  @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // grid_stops  @binding(3)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // minmax buffer  @binding(4)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
         let jfa_render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("JFA Render Bind Group Layout"),
@@ -397,6 +472,17 @@ impl RenderState {
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
                         visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // minmax buffer @binding(4)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
@@ -532,6 +618,60 @@ impl RenderState {
             ],
         });
 
+        let minmax_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group A"),
+            layout: &minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let minmax_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group B"),
+            layout: &minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         let jfa_render_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("JFA Render Bind Group A"),
             layout: &jfa_render_bind_group_layout,
@@ -551,6 +691,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -574,6 +718,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -633,6 +781,26 @@ impl RenderState {
             label: Some("JFA Step Pipeline"),
             layout: Some(&jfa_step_pipeline_layout),
             module: &jfa_step_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // Minmax Pipeline
+        let minmax_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/arrival_minmax.wgsl"));
+
+        let minmax_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("MinMax Pipeline Layout"),
+                bind_group_layouts: &[&minmax_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let minmax_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("MinMax Pipeline"),
+            layout: Some(&minmax_pipeline_layout),
+            module: &minmax_shader,
             entry_point: Some("main"),
             compilation_options: Default::default(),
             cache: None,
@@ -730,6 +898,12 @@ impl RenderState {
             jfa_step_bind_group_a,
             jfa_step_bind_group_b,
             jfa_step_bind_group_layout,
+
+            minmax_pipeline,
+            minmax_bind_group_layout,
+            minmax_bind_group_a,
+            minmax_bind_group_b,
+            minmax_buffer,
 
             jfa_render_pipeline,
             jfa_render_bind_group_a,
@@ -1038,6 +1212,60 @@ impl RenderState {
             ],
         });
 
+        self.minmax_bind_group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group A"),
+            layout: &self.minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.minmax_bind_group_b = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group B"),
+            layout: &self.minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         // Render bind groups (sampling)
         self.jfa_render_bind_group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("JFA Render Bind Group A"),
@@ -1058,6 +1286,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1081,6 +1313,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1125,13 +1361,11 @@ impl RenderState {
             }
 
             // JFA Step Passes
-            let final_texture_render_bind_group: &wgpu::BindGroup;
+            // flips read/write between texture_a and texture_b
+            // false -> read texture_a, write texture_b
+            // true -> read texture_b, write texture_a
+            let mut flip = false;
             {
-                // flips read/write between texture_a and texture_b
-                // false -> read texture_a, write texture_b
-                // true -> read texture_b, write texture_a
-                let mut flip = false;
-
                 for jump_size_index in 0..self.jfa_jump_count {
                     // Copy one f32 jump value into ShaderConfig.jump_size
                     let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
@@ -1173,22 +1407,50 @@ impl RenderState {
 
                     flip = !flip;
                 }
-
-                // note: after loop, if flip is true -> then final texture is in texture_a (and its in texture_b otherwise)
-                final_texture_render_bind_group = if flip {
-                    &self.jfa_render_bind_group_a
-                } else {
-                    &self.jfa_render_bind_group_b
-                };
             }
 
-            // final_texture_render_bind_group = &self.jfa_render_bind_group_a;
+            // Minmax Pass (finding lowest and greatest pixel arrival_time)
+            {
+                // reset minmax buffer each frame
+                let minmax_init: [u32; 2] = [u32::MAX, 0];
+                self.queue
+                    .write_buffer(&self.minmax_buffer, 0, bytemuck::cast_slice(&minmax_init));
 
-            // Render Pass (turning travel time texture into an actual image with colors)
+                let minmax_bind_group = if flip {
+                    &self.minmax_bind_group_a
+                } else {
+                    &self.minmax_bind_group_b
+                };
+
+                {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("Arrival MinMax Pass"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(&self.minmax_pipeline);
+                    pass.set_bind_group(0, minmax_bind_group, &[]);
+
+                    let wg_size_x = 16u32;
+                    let wg_size_y = 16u32;
+                    let dispatch_x = (self.jfa_config.jfa_width as u32 + wg_size_x - 1) / wg_size_x;
+                    let dispatch_y =
+                        (self.jfa_config.jfa_height as u32 + wg_size_y - 1) / wg_size_y;
+                    pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+                }
+            }
+
+            // Render Pass (turning best stop index texture into an actual image with colors)
             {
                 let view = output
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
+
+                // note: after loop, if flip is true -> then final texture is in texture_a (and its in texture_b otherwise)
+                let final_texture_render_bind_group = if flip {
+                    &self.jfa_render_bind_group_a
+                } else {
+                    &self.jfa_render_bind_group_b
+                };
 
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("JFA Render Pass"),

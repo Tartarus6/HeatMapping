@@ -8,8 +8,8 @@ struct ShaderConfig {
     gpu_grid_cell_size: f32, // size of each cell (in radians)
     begin_time: f32,         // departure time in seconds since midnight
     // TODO: fix max time
-    max_time: f32,               // latest arrival time in seconds since midnight
-    inverse_walk_speed_mps: f32, // walking speed in seconds per meter
+    max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
+    inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }
 
 struct JFAConfig {
@@ -37,7 +37,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // index current best stop (from prev_texture)
     var best_index: u32 = 0u;
-    var best_arrival_time: u32 = u32(config.max_time);
+    var best_arrival_time: u32 = 0xFFFFFFFFu;
 
     // TODO: is there a fancier, better way to iterate through the 9 neighbors?
     // check 8 neighbors at distance jump

@@ -5,6 +5,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::window::WindowId;
 use winit::{application::ApplicationHandler, event_loop::ActiveEventLoop, window::Window};
 
+use crate::MAX_WALK_TRANSFER_DISTANCE;
 use crate::utils::meters_per_pixel;
 use crate::{
     DEPART_INSTANT, GpuGridCell, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, WALKING_SPEED,
@@ -52,7 +53,6 @@ impl App {
 
         // TODO: replace max_time with actual processing stage to calculate it
         let begin_time = DEPART_INSTANT.time;
-        let max_time = DEPART_INSTANT.time + 36000; // shitty hack to make it display SOMETHING
 
         let shader_config = ShaderConfig {
             width: MAX_DIM as f32,  // dummy init value (will be overwritten)
@@ -63,7 +63,7 @@ impl App {
             bbox_max_lon: 1.0,      // dummy init value (will be overwritten)
             gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
             begin_time: begin_time as f32,
-            max_time: max_time as f32,
+            max_walk_transfer_distance: MAX_WALK_TRANSFER_DISTANCE as f32,
             inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
         };
 

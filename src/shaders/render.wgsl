@@ -13,8 +13,8 @@ struct ShaderConfig {
     gpu_grid_cell_size: f32, // size of each cell (in radians)
     begin_time: f32,         // departure time in seconds since midnight
     // TODO: fix max time
-    max_time: f32,               // latest arrival time in seconds since midnight
-    inverse_walk_speed_mps: f32, // walking speed in seconds per meter
+    max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
+    inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }
 
 struct JFAConfig {
@@ -24,6 +24,11 @@ struct JFAConfig {
     meters_per_px_x: f32, // approximate number of meters per x pixel
     meters_per_px_y: f32, // approximate number of meters per y pixel
 }
+
+struct MinMax {
+    min_time: atomic<u32>,
+    max_time: atomic<u32>,
+};
 
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
@@ -51,6 +56,7 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 @group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
 @group(0) @binding(3) var<storage, read> grid_stops: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> minmax: MinMax;
 
 /// color (in oklch) of the earliest arrival_times
 const COLOR_FAST = vec3f(0.9333, 0.2068, 105.88); // yellow
@@ -67,6 +73,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // map uv in [0,1] to [0, dims-1]
     let xy: vec2u = min(vec2u(uv * vec2f(dims)), dims - vec2u(1u));
 
+    // load min and max arrival times from minmax
+    let min_t = f32(atomicLoad(&minmax.min_time));
+    let max_t = f32(atomicLoad(&minmax.max_time));
+
     // get the best stop index from the pixel (just x component since texture is r32uint)
     var best_stop_index: u32 = textureLoad(jfa_tex, vec2i(xy), 0).x; // offset included
 
@@ -75,7 +85,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // if candudate "candidate_stop_index" is zero, that means it's invalid (because pixel value is always stored with a +1 offset when it's valid, so a valid pixel can't be zero)
     if best_stop_index == 0 {
         // set arrival_time for pixel to max_time so that it blends nicely with the end of the gradient
-        arrival_time = u32(config.max_time);
+        arrival_time = u32(max_t);
     } else {
         best_stop_index -= 1; // remove offset
 
@@ -101,7 +111,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     }
 
     // convert arrival time into [0,1] based on max_time
-    let uniform_arrival_time: f32 = (f32(arrival_time) - config.begin_time) / (config.max_time - config.begin_time);
+    let denom = max(1.0, max_t - min_t);
+    let uniform_arrival_time = clamp((f32(arrival_time) - min_t) / denom, 0.0, 1.0);
 
     // return the resulting color
     return vec4f(gradient_get_color(uniform_arrival_time));
