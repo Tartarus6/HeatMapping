@@ -19,13 +19,13 @@ mod utils;
 /// controls the size of the heatmap output, the aspect ratio changes based on bounding box, but this controls the longest side
 const MAX_DIM: u32 = 512;
 /// walking speed in kilometers per hour
-const WALKING_SPEED: f64 = 5.0;
+const WALKING_SPEED: f32 = 5.0;
 /// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
-const MAX_WALK_TRANSFER_DISTANCE: f64 = 20000.0;
+const MAX_WALK_TRANSFER_DISTANCE: f32 = 5000.0;
 
 /// initial zoom control (half of latitude span in radians)
 /// bigger value means zoomed further out.
-const INITIAL_HALF_LAT_SPAN: f64 = 0.03;
+const INITIAL_HALF_LAT_SPAN: f32 = 0.03;
 
 // TODO: switch to automatically setting and updating jfa scale based on window dimensions (or maybe measure performance and increase if too slow)
 /// integer scale of jfa render
@@ -50,9 +50,8 @@ const DEPART_INSTANT: DepartInstant = DepartInstant {
     },
 };
 
-// const OUTPUT_DIRECTORY: &str = "./output/";
 const CACHE_DIRECTORY: &str = "./cache/";
-const GTFS_DIRECTORY: &str = "./src/lib/GTFS/";
+const GTFS_DIRECTORY: &str = "./GTFS/";
 
 fn main() {
     tracing_subscriber::fmt()
@@ -107,9 +106,7 @@ fn main() {
     println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
 
     // Shader
-    let now = Instant::now();
     shader::run(&gtfs_data, &arrival_times, gpu_grid_cells, gpu_grid_stops).block_on();
-    println!("Heatmap: {}ms\n", now.elapsed().as_millis());
 }
 
 #[repr(C)]

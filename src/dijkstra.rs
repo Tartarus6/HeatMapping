@@ -123,7 +123,7 @@ pub fn get_culled_connections(
 
     let mut culled_connections_map: HashMap<u32, Vec<Connection>> = HashMap::new();
 
-    for (_, connections) in connections_map {
+    for (trip_id, connections) in connections_map {
         for connection in connections {
             // if departure_time already passed, skip it
             // or if arrival_time is too late, skip it
@@ -137,7 +137,7 @@ pub fn get_culled_connections(
                 .get(&(
                     gtfs_data
                         .trips
-                        .get(&connection.trip_id)
+                        .get(trip_id)
                         .ok_or("trip not found (non-fatal)")?
                         .service_id,
                     DEPART_INSTANT.date,

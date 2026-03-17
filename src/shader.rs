@@ -1011,12 +1011,12 @@ impl RenderState {
         // jfa config update
         let meters_per_pixel = meters_per_pixel(
             Position {
-                lat: self.shader_config.bbox_min_lat as f64,
-                lon: self.shader_config.bbox_min_lon as f64,
+                lat: self.shader_config.bbox_min_lat as f32,
+                lon: self.shader_config.bbox_min_lon as f32,
             },
             Position {
-                lat: self.shader_config.bbox_max_lat as f64,
-                lon: self.shader_config.bbox_max_lon as f64,
+                lat: self.shader_config.bbox_max_lat as f32,
+                lon: self.shader_config.bbox_max_lon as f32,
             },
             self.jfa_config.jfa_width as u32,
             self.jfa_config.jfa_height as u32,
@@ -1087,12 +1087,12 @@ impl RenderState {
 
             let meters_per_pixel = meters_per_pixel(
                 Position {
-                    lat: self.shader_config.bbox_min_lat as f64,
-                    lon: self.shader_config.bbox_min_lon as f64,
+                    lat: self.shader_config.bbox_min_lat as f32,
+                    lon: self.shader_config.bbox_min_lon as f32,
                 },
                 Position {
-                    lat: self.shader_config.bbox_max_lat as f64,
-                    lon: self.shader_config.bbox_max_lon as f64,
+                    lat: self.shader_config.bbox_max_lat as f32,
+                    lon: self.shader_config.bbox_max_lon as f32,
                 },
                 max(1, new_size.width / JFA_SCALE),
                 max(1, new_size.height / JFA_SCALE),

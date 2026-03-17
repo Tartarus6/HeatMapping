@@ -1,8 +1,10 @@
 // This file contains all of the implementations related to parsing the gtfs files
 
 use csv::{Reader, StringRecord};
-use std::collections::HashMap;
+use std::fs;
 use std::fs::File;
+use std::path::Path;
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
     GTFS_DIRECTORY, MAX_WALK_TRANSFER_DISTANCE,
@@ -26,162 +28,169 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         connections: HashMap::new(),
     };
 
-    // stops
-    let file = File::open(format!("{GTFS_DIRECTORY}{}", "stops.txt"))?;
-    let mut reader = Reader::from_reader(file);
+    for directory in get_child_dirs(GTFS_DIRECTORY)? {
+        println!("GTFS Directory: {:?}", directory);
 
-    let headers = reader.headers()?.clone();
-    let idx = header_index(&headers);
+        // stops
+        let file = File::open(directory.join("stops.txt"))?;
+        let mut reader = Reader::from_reader(file);
 
-    for result in reader.records() {
-        let record = result?;
+        let headers = reader.headers()?.clone();
+        let idx = header_index(&headers);
 
-        let stop_id = parse_stop_id(require(&record, &idx, "stop_id")?)?;
+        for result in reader.records() {
+            let record = result?;
 
-        let position = Position {
-            lat: require(&record, &idx, "stop_lat")?
-                .parse::<f64>()?
-                .to_radians(),
-            lon: require(&record, &idx, "stop_lon")?
-                .parse::<f64>()?
-                .to_radians(),
-        };
+            let stop_id = parse_stop_id(require(&record, &idx, "stop_id")?)?;
 
-        gtfs_data.stops.insert(stop_id, Stop { stop_id, position });
-        gtfs_data.grid.insert(position, stop_id);
-    }
-    println!("Loaded {} stops", gtfs_data.stops.len());
+            let position = Position {
+                lat: require(&record, &idx, "stop_lat")?
+                    .parse::<f32>()?
+                    .to_radians(),
+                lon: require(&record, &idx, "stop_lon")?
+                    .parse::<f32>()?
+                    .to_radians(),
+            };
 
-    // routes
-    let file = File::open(format!("{}{}", GTFS_DIRECTORY, "routes.txt"))?;
-    let mut reader = Reader::from_reader(file);
+            gtfs_data.stops.insert(stop_id, Stop { stop_id, position });
+            gtfs_data.grid.insert(position, stop_id);
+        }
+        println!("Loaded {} stops", gtfs_data.stops.len());
 
-    let headers = reader.headers()?.clone();
-    let idx = header_index(&headers);
+        // routes
+        let file = File::open(directory.join("routes.txt"))?;
+        let mut reader = Reader::from_reader(file);
 
-    for result in reader.records() {
-        let record = result?;
+        let headers = reader.headers()?.clone();
+        let idx = header_index(&headers);
 
-        let route_id: u32 = parse_route_id(require(&record, &idx, "route_id")?)?;
+        for result in reader.records() {
+            let record = result?;
 
-        gtfs_data.routes.insert(
-            route_id,
-            Route {
+            let route_id: u32 = parse_route_id(require(&record, &idx, "route_id")?)?;
+
+            gtfs_data.routes.insert(
                 route_id,
-                route_type: RouteType::parse_route_type(
-                    require(&record, &idx, "route_type")?.parse()?,
-                ),
-                name: get(&record, &idx, "route_long_name")
-                    .or_else(|| get(&record, &idx, "route_short_name"))
-                    .unwrap_or("")
-                    .to_string(),
-            },
-        );
-    }
-    println!("Loaded {} routes", gtfs_data.routes.len());
+                Route {
+                    route_id,
+                    route_type: RouteType::parse_route_type(
+                        require(&record, &idx, "route_type")?.parse()?,
+                    ),
+                    name: get(&record, &idx, "route_long_name")
+                        .or_else(|| get(&record, &idx, "route_short_name"))
+                        .unwrap_or("")
+                        .to_string(),
+                },
+            );
+        }
+        println!("Loaded {} routes", gtfs_data.routes.len());
 
-    // trips
-    let file = File::open(format!("{GTFS_DIRECTORY}{}", "trips.txt"))?;
-    let mut reader = Reader::from_reader(file);
+        // trips
+        let file = File::open(directory.join("trips.txt"))?;
+        let mut reader = Reader::from_reader(file);
 
-    let headers = reader.headers()?.clone();
-    let idx = header_index(&headers);
+        let headers = reader.headers()?.clone();
+        let idx = header_index(&headers);
 
-    for result in reader.records() {
-        let record = result?;
+        for result in reader.records() {
+            let record = result?;
 
-        let trip_id: u32 = require(&record, &idx, "trip_id")?.parse()?;
+            let trip_id: u32 = require(&record, &idx, "trip_id")?.parse()?;
 
-        gtfs_data.trips.insert(
-            trip_id,
-            Trip {
+            gtfs_data.trips.insert(
                 trip_id,
-                route_id: parse_route_id(require(&record, &idx, "route_id")?)?,
-                service_id: require(&record, &idx, "service_id")?.parse()?,
-                stop_times: vec![],
-            },
-        );
-    }
-    println!("Loaded {} trips", gtfs_data.trips.len());
+                Trip {
+                    trip_id,
+                    route_id: parse_route_id(require(&record, &idx, "route_id")?)?,
+                    service_id: require(&record, &idx, "service_id")?.parse()?,
+                    stop_times: vec![],
+                },
+            );
+        }
+        println!("Loaded {} trips", gtfs_data.trips.len());
 
-    // stop_times
-    let file = File::open(format!("{GTFS_DIRECTORY}{}", "stop_times.txt"))?;
-    let mut reader = Reader::from_reader(file);
+        // stop_times
+        let file = File::open(directory.join("stop_times.txt"))?;
+        let mut reader = Reader::from_reader(file);
 
-    let headers = reader.headers()?.clone();
-    let idx = header_index(&headers);
+        let headers = reader.headers()?.clone();
+        let idx = header_index(&headers);
 
-    let mut stop_times_count: u32 = 0;
-    for result in reader.records() {
-        let record = result?;
-        let trip_id: u32 = require(&record, &idx, "trip_id")?.parse()?;
+        let mut stop_times_count: u32 = 0;
+        for result in reader.records() {
+            let record = result?;
+            let trip_id: u32 = require(&record, &idx, "trip_id")?.parse()?;
 
-        let trip = gtfs_data
-            .trips
-            .get_mut(&trip_id)
-            .ok_or("stop time trip didn't exist")?;
+            let trip = gtfs_data
+                .trips
+                .get_mut(&trip_id)
+                .ok_or("stop time trip didn't exist")?;
 
-        trip.stop_times.push(StopTime {
-            trip_id,
-            stop_sequence: require(&record, &idx, "stop_sequence")?.parse()?,
-            stop_id: parse_stop_id(require(&record, &idx, "stop_id")?)?,
-            arrival_time: str_time_to_seconds(require(&record, &idx, "arrival_time")?)?,
-            departure_time: str_time_to_seconds(require(&record, &idx, "departure_time")?)?,
-        });
-
-        stop_times_count += 1;
-    }
-    println!("Loaded {} stop_times", stop_times_count);
-
-    // services (from calendar_dates)
-    let file = File::open(format!("{GTFS_DIRECTORY}{}", "calendar_dates.txt"))?;
-    let mut reader = Reader::from_reader(file);
-
-    let headers = reader.headers()?.clone();
-    let idx = header_index(&headers);
-
-    for result in reader.records() {
-        let record = result?;
-
-        let service_id: u32 = require(&record, &idx, "service_id")?.parse()?;
-        let date = Date::parse_date_string(require(&record, &idx, "date")?)?;
-        let exception_type = ServiceExceptionType::parse_exception_type(
-            require(&record, &idx, "exception_type")?
-                .parse()
-                .unwrap_or(0),
-        ); // default to 0, which lets `parse_exception_type()` decide the default
-
-        gtfs_data
-            .services
-            .insert((service_id, date), exception_type);
-    }
-    println!("Loaded {} services", gtfs_data.services.len());
-
-    // transfers
-    let file = File::open(format!("{GTFS_DIRECTORY}{}", "transfers.txt"))?;
-    let mut reader = Reader::from_reader(file);
-
-    let headers = reader.headers()?.clone();
-    let idx = header_index(&headers);
-
-    for result in reader.records() {
-        let record = result?;
-
-        let from_stop_id: u32 = parse_stop_id(require(&record, &idx, "from_stop_id")?)?;
-
-        gtfs_data
-            .transfers
-            .entry(from_stop_id)
-            .or_insert_with(Vec::new)
-            .push(Transfer {
-                from_stop_id: from_stop_id,
-                to_stop_id: parse_stop_id(require(&record, &idx, "to_stop_id")?)?,
-                // TODO: is the GTFS standard format for min_transfer_time in seconds already, or does it need to be converted?
-                min_transfer_time: require(&record, &idx, "min_transfer_time")?
-                    .parse()
-                    .unwrap_or(0), // default to 0 if not declared
+            trip.stop_times.push(StopTime {
+                trip_id,
+                stop_id: parse_stop_id(require(&record, &idx, "stop_id")?)?,
+                arrival_time: str_time_to_seconds(require(&record, &idx, "arrival_time")?)?,
+                departure_time: str_time_to_seconds(require(&record, &idx, "departure_time")?)?,
             });
+
+            stop_times_count += 1;
+        }
+        println!("Loaded {} stop_times", stop_times_count);
+
+        // services (from calendar_dates)
+        let file = File::open(directory.join("calendar_dates.txt"))?;
+        let mut reader = Reader::from_reader(file);
+
+        let headers = reader.headers()?.clone();
+        let idx = header_index(&headers);
+
+        for result in reader.records() {
+            let record = result?;
+
+            let service_id: u32 = require(&record, &idx, "service_id")?.parse()?;
+            let date = Date::parse_date_string(require(&record, &idx, "date")?)?;
+            let exception_type = ServiceExceptionType::parse_exception_type(
+                require(&record, &idx, "exception_type")?
+                    .parse()
+                    .unwrap_or(0),
+            ); // default to 0, which lets `parse_exception_type()` decide the default
+
+            gtfs_data
+                .services
+                .insert((service_id, date), exception_type);
+        }
+        println!("Loaded {} services", gtfs_data.services.len());
+
+        // transfers
+        let file = File::open(directory.join("transfers.txt"))?;
+        let mut reader = Reader::from_reader(file);
+
+        let headers = reader.headers()?.clone();
+        let idx = header_index(&headers);
+
+        for result in reader.records() {
+            let record = result?;
+
+            let from_stop_id: u32 = parse_stop_id(require(&record, &idx, "from_stop_id")?)?;
+
+            gtfs_data
+                .transfers
+                .entry(from_stop_id)
+                .or_insert_with(Vec::new)
+                .push(Transfer {
+                    from_stop_id: from_stop_id,
+                    to_stop_id: parse_stop_id(require(&record, &idx, "to_stop_id")?)?,
+                    // TODO: is the GTFS standard format for min_transfer_time in seconds already, or does it need to be converted?
+                    min_transfer_time: require(&record, &idx, "min_transfer_time")?
+                        .parse()
+                        .unwrap_or(0), // default to 0 if not declared
+                });
+        }
+
+        println!();
     }
+
+    // Transfers Post-Parse
     for from_stop in gtfs_data.stops.values() {
         let culled_stops = gtfs_data.grid.get_nearby(from_stop.position);
 
@@ -206,7 +215,7 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     }
     println!("Loaded {} transfers", gtfs_data.transfers.len());
 
-    // connections
+    // Connections Post-Parse
     let mut connection_count: u32 = 0;
     for (_, trip) in gtfs_data.trips.iter_mut() {
         // sort stop times to be in order
@@ -253,4 +262,19 @@ fn require<'a>(
     name: &str,
 ) -> Result<&'a str, Box<dyn std::error::Error>> {
     get(rec, idx, name).ok_or_else(|| format!("missing required column: {name}").into())
+}
+
+/// get the child directories of a directory
+fn get_child_dirs(root: impl AsRef<Path>) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut dirs = Vec::new();
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+
+    Ok(dirs)
 }
