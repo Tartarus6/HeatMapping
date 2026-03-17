@@ -1,8 +1,14 @@
 // This file contains all of the data structures used throughout the code
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::atomic,
+};
 
 use serde::{Deserialize, Serialize};
+
+use crate::utils::str_to_u32_hash;
 
 pub struct DepartInstant {
     pub position: Position,
@@ -16,11 +22,11 @@ pub struct SpatialGrid {
     /// <(lat_index, lon_index), list of stop_ids>
     pub map: HashMap<(i32, i32), Vec<u32>>,
     /// side length of each cell (in radians)
-    pub cell_size: f64,
+    pub cell_size: f32,
 }
 
 impl SpatialGrid {
-    pub fn new(cell_size_meters: f64) -> Self {
+    pub fn new(cell_size_meters: f32) -> Self {
         Self {
             map: HashMap::new(),
             cell_size: cell_size_meters / 6_371_000.0, // convert radians to meters (further handling is needed for latitude)
@@ -71,9 +77,9 @@ impl SpatialGrid {
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Position {
     /// latitude in radians
-    pub lat: f64,
+    pub lat: f32,
     /// longitude in radians
-    pub lon: f64,
+    pub lon: f32,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -141,13 +147,12 @@ pub struct Trip {
     pub trip_id: u32,
     pub route_id: u32,
     pub service_id: u32,
-    pub stop_times: Vec<StopTime>, // TODO: fix the duplication of stop_times (its A LOT of data)
+    pub stop_times: Vec<StopTime>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct StopTime {
     pub trip_id: u32,
-    pub stop_sequence: u16,
     pub stop_id: u32,
     /// seconds since midnight (note, can sometimes be greater than 24 hours worth)
     pub arrival_time: u32,
@@ -230,15 +235,67 @@ pub struct GTFSData {
     pub connections: HashMap<u32, Vec<Connection>>,
 }
 
+// --- Shader Structs ---
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuGridCellKey {
+    pub lat: i32,
+    pub lon: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuGridCellVal {
+    pub start: u32,
+    pub count: u32,
+}
+
+// TODO: switch width, height, begin_time, and max_time to be u32
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ShaderConfig {
+    pub width: f32,  // how many pixels wide the image is
+    pub height: f32, // how many pixels high the image is
+    pub bbox_min_lat: f32,
+    pub bbox_min_lon: f32,
+    pub bbox_max_lat: f32,
+    pub bbox_max_lon: f32,
+    pub gpu_grid_cell_size: f32, // size of each cell (in radians)
+    pub begin_time: f32,         // departure time in seconds since midnight
+    // TODO: fix max time
+    pub max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
+    pub inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
+}
+
+// TODO: switch width, height, and jump_size to be u32
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct JFAConfig {
+    pub jfa_width: f32,       // how many pixels wide the image is
+    pub jfa_height: f32,      // how many pixels high the image is
+    pub jump_size: f32,       // jump size for JFA
+    pub meters_per_px_x: f32, // approximate number of meters per x pixel
+    pub meters_per_px_y: f32, // approximate number of meters per y pixel
+}
+
+// #[repr(C)]
+// #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+// pub struct MinMax {
+//     pub min_time: atomic<u32>,
+//     pub max_time: atomic<u32>,
+// }
+
 /// parses stop_id, handling both "600737" and "stoparea:600737" formats
 pub fn parse_stop_id(stop_id_str: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let stop_id: u32;
 
-    if let Some(pos) = stop_id_str.rfind(':') {
-        stop_id = stop_id_str[pos + 1..].parse()?;
-    } else {
-        stop_id = stop_id_str.parse()?;
-    }
+    // if let Some(pos) = stop_id_str.rfind(':') {
+    //     stop_id = stop_id_str[pos + 1..].parse()?;
+    // } else {
+    //     stop_id = stop_id_str.parse()?;
+    // }
+
+    stop_id = str_to_u32_hash(stop_id_str);
 
     Ok(stop_id)
 }
@@ -247,11 +304,13 @@ pub fn parse_stop_id(stop_id_str: &str) -> Result<u32, Box<dyn std::error::Error
 pub fn parse_route_id(route_id_str: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let route_id: u32;
 
-    if route_id_str.rfind('_').is_some() {
-        route_id = route_id_str.replace('_', "").parse()?;
-    } else {
-        route_id = route_id_str.parse()?;
-    }
+    // if route_id_str.rfind('_').is_some() {
+    //     route_id = route_id_str.replace('_', "").parse()?;
+    // } else {
+    //     route_id = route_id_str.parse()?;
+    // }
+
+    route_id = str_to_u32_hash(route_id_str);
 
     Ok(route_id)
 }

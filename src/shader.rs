@@ -1,69 +1,88 @@
 // This file contains all of the implementations related to shaders and rendering
 
+use std::cmp::max;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED};
-
-use wgpu::{BufferUsages, util::DeviceExt};
-use winit::{
-    application::ApplicationHandler,
-    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
-    window::{Window, WindowId},
+use crate::{
+    GTFSData, GpuGridCell, JFA_SCALE, Position,
+    app::App,
+    structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
+    utils::{hash2_i32, meters_per_pixel},
 };
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuGridCellKey {
-    lat: i32,
-    lon: i32,
-}
+use tracing::{info_span, instrument};
+use wgpu::{BufferUsages, util::DeviceExt};
+use winit::{event_loop::EventLoop, window::Window};
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuGridCellVal {
-    start: u32,
-    count: u32,
-}
+const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
-// TODO: switch width, height, begin_time, and max_time to be u32
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ShaderConfig {
-    width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels tall the image is
-    bbox_min_lat: f32,
-    bbox_min_lon: f32,
-    bbox_max_lat: f32,
-    bbox_max_lon: f32,
-    gpu_grid_cell_size: f32, // size of each cell (in radians)
-    begin_time: f32,         // departure time in seconds since midnight
-    // TODO: fix max time
-    max_time: f32,       // latest arrival time in seconds since midnight
-    walk_speed_mps: f32, // walking speed in meters per second
-}
+// TODO: add a scale reference (like google maps has) showing how zoomed in the view is
 
 // Holds all the wgpu state needed to render
-struct RenderState {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    render_pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+pub struct RenderState {
+    pub surface: wgpu::Surface<'static>,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub config: wgpu::SurfaceConfiguration,
 
-    shader_config: ShaderConfig,        // CPU-side copy
-    shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+    pub num_stops: u32,
+
+    pub gpu_grid_stops_buffer: wgpu::Buffer,
+
+    pub jfa_seed_pipeline: wgpu::ComputePipeline,
+    pub jfa_seed_bind_group: wgpu::BindGroup,
+    pub jfa_seed_bind_group_layout: wgpu::BindGroupLayout,
+
+    pub jfa_step_pipeline: wgpu::ComputePipeline,
+    pub jfa_step_bind_group_a: wgpu::BindGroup,
+    pub jfa_step_bind_group_b: wgpu::BindGroup,
+    pub jfa_step_bind_group_layout: wgpu::BindGroupLayout,
+
+    pub minmax_pipeline: wgpu::ComputePipeline,
+    pub minmax_bind_group_layout: wgpu::BindGroupLayout,
+    pub minmax_bind_group_a: wgpu::BindGroup,
+    pub minmax_bind_group_b: wgpu::BindGroup,
+    pub minmax_buffer: wgpu::Buffer,
+
+    pub jfa_render_pipeline: wgpu::RenderPipeline,
+    pub jfa_render_bind_group_a: wgpu::BindGroup,
+    pub jfa_render_bind_group_b: wgpu::BindGroup,
+    pub jfa_render_bind_group_layout: wgpu::BindGroupLayout,
+
+    pub stop_points_pipeline: wgpu::RenderPipeline,
+    pub stop_points_bind_group: wgpu::BindGroup,
+    pub stop_points_bind_group_layout: wgpu::BindGroupLayout,
+
+    pub shader_config: ShaderConfig,        // CPU-side copy
+    pub shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+
+    pub jfa_config: JFAConfig,           // CPU-side copy
+    pub jfa_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+
+    pub jfa_texture_a: wgpu::Texture,
+    pub jfa_texture_b: wgpu::Texture,
+    pub jfa_texture_a_view: wgpu::TextureView,
+    pub jfa_texture_b_view: wgpu::TextureView,
+
+    pub jfa_jump_values_buffer: wgpu::Buffer,
+    pub jfa_jump_count: u32,
+    // byte offset of `jump_size` field inside ShaderConfig
+    pub shader_config_jump_offset_bytes: u64,
+
+    pub timestamp_query_set: wgpu::QuerySet,
+    pub timestamp_resolve_buffer: wgpu::Buffer,
+    pub timestamp_readback_buffer: wgpu::Buffer,
 }
 
 impl RenderState {
-    async fn new(
+    pub async fn new(
         window: Arc<Window>,
         gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
         gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
         gpu_grid_stops: &Vec<[f32; 4]>,
         shader_config: ShaderConfig,
+        jfa_config: JFAConfig,
     ) -> Self {
         let size = window.inner_size();
 
@@ -84,7 +103,17 @@ impl RenderState {
             })
             .await
             .unwrap();
-        let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::CLEAR_TEXTURE | wgpu::Features::TIMESTAMP_QUERY,
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
+            })
+            .await
+            .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -106,6 +135,7 @@ impl RenderState {
         };
         surface.configure(&device, &config);
 
+        // Initializing Buffers
         let gpu_grid_cell_keys_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("GPU Grid Cell Keys Buffer"),
@@ -132,133 +162,720 @@ impl RenderState {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        let jfa_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Config Buffer"),
+            contents: bytemuck::cast_slice(&[jfa_config]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // TODO: this needs to dynamicall change with screen size
+        // Build jump sequence: 8192, 4096, ..., 1
+        let mut jumps: Vec<f32> = Vec::new();
+        let mut j = 1024u32;
+        while j >= 1 {
+            jumps.push(j as f32);
+            j /= 2;
+        }
+        // jumps.push(1.0); // add an extra jump of distance 1 in order to improve output stability
+
+        let jfa_jump_values_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("JFA Jump Values Buffer"),
+            contents: bytemuck::cast_slice(&jumps),
+            usage: wgpu::BufferUsages::COPY_SRC,
+        });
+
+        // TODO: make this less horrible (push constants would be really cool if they exist (they might))
+        // Offset of jump_size in JFAConfig (11th f32 field, zero-based index 10)
+        let jfa_config_jump_offset_bytes = (2 * std::mem::size_of::<f32>()) as u64;
+
+        // We record 2 timestamps per pass: begin/end.
+        // Passes: seed + each jfa step + final render.
+        let timestamp_pass_count = 1 + (jumps.len() as u32) + 1 + 1; // seed + steps + render + stop_points
+        let timestamp_query_count = timestamp_pass_count * 2;
+
+        let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("Frame Timestamp Query Set"),
+            ty: wgpu::QueryType::Timestamp,
+            count: timestamp_query_count,
+        });
+
+        let timestamp_buffer_size =
+            (timestamp_query_count as u64) * std::mem::size_of::<u64>() as u64;
+
+        let timestamp_resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Timestamp Resolve Buffer"),
+            size: timestamp_buffer_size,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let timestamp_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Timestamp Readback Buffer"),
+            size: timestamp_buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let minmax_init: [u32; 2] = [u32::MAX, 0];
+        let minmax_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("MinMax Buffer"),
+            contents: bytemuck::cast_slice(&minmax_init),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // TODO: fix duplication of texture format and of texture usage
+        // texture buffers
+        let jfa_texture_desc = wgpu::TextureDescriptor {
+            size: wgpu::Extent3d {
+                width: max(1, config.width / JFA_SCALE),
+                height: max(1, config.height / JFA_SCALE),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: JFA_TEXTURE_FORMAT,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            label: None,
+            view_formats: &[],
+        };
+
+        // Ping/pong textures:
+        let jfa_texture_a = device.create_texture(&jfa_texture_desc);
+        let jfa_texture_b = device.create_texture(&jfa_texture_desc);
+        let jfa_texture_a_view = jfa_texture_a.create_view(&Default::default());
+        let jfa_texture_b_view = jfa_texture_b.create_view(&Default::default());
+
+        // Setting Bind Group Layout (buffer layout)
+        //
         // A bind group layout describes the types of resources that a bind group can contain. Think
         // of this like a C-style header declaration, ensuring both the pipeline and bind group agree
         // on the types of resources.
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let jfa_seed_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("JFA Seed Bind Group Layout"),
+                entries: &[
+                    // grid_stops @binding(0)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    // shader_config @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    // seed_out @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: JFA_TEXTURE_FORMAT,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    // jfa_config @binding(3)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                ],
+            });
 
+        let jfa_step_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("JFA Step Bind Group Layout"),
+                entries: &[
+                    // prev_texture @binding(0)
+                    // (read only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: JFA_TEXTURE_FORMAT,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    // next_texture @binding(1)
+                    // (write only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: JFA_TEXTURE_FORMAT,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    // shader_config @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config @binding(3)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // grid_stops @binding(4)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let minmax_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("MinMax Bind Group Layout"),
+                entries: &[
+                    // jfa texture  @binding(0)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // shader_config  @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config  @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // grid_stops  @binding(3)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // minmax buffer  @binding(4)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let jfa_render_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("JFA Render Bind Group Layout"),
+                entries: &[
+                    // jfa texture @binding(0)
+                    // (read only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // shader_config @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // grid_stops @binding(3)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // minmax buffer @binding(4)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let stop_points_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Stop Points Bind Group Layout"),
+                entries: &[
+                    // grid_stops @binding(0)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // shader_config @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        // Putting Buffers into Bind Layout
+        //
         // The bind group contains the actual resources to bind to the pipeline.
         //
         // Even when the buffers are individually dropped, wgpu will keep the bind group and buffers
         // alive until the bind group itself is dropped.
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bind_group_layout,
+        let jfa_seed_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Seed Bind Group"),
+            layout: &jfa_seed_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: gpu_grid_cell_keys_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: gpu_grid_cell_vals_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
                     resource: gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 3,
+                    binding: 1,
                     resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
                 },
             ],
         });
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/shader.wgsl"));
+        // Bind group for reading from texture_a and writing to texture_b
+        let jfa_step_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group A"),
+            layout: &jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+            ],
+        });
 
-        let render_pipeline_layout =
+        // Bind group for reading from texture_b and writing to texture_a
+        let jfa_step_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group B"),
+            layout: &jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let minmax_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group A"),
+            layout: &minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let minmax_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group B"),
+            layout: &minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let jfa_render_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Render Bind Group A"),
+            layout: &jfa_render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let jfa_render_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Render Bind Group B"),
+            layout: &jfa_render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let stop_points_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Stop Point Bind Group"),
+            layout: &stop_points_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // JFA Seed Pipeline
+        let jfa_seed_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/seed_scatter.wgsl"));
+
+        let jfa_seed_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
+                label: Some("JFA Seed Pipeline Layout"),
+                bind_group_layouts: &[&jfa_seed_bind_group_layout],
                 immediate_size: 0,
             });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
+        let jfa_seed_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("JFA Seed Pipeline"),
+            layout: Some(&jfa_seed_pipeline_layout),
+            module: &jfa_seed_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // JFA Step Pipeline
+        // Compute Pipeline
+        let jfa_step_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/jfa_step.wgsl"));
+
+        let jfa_step_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("JFA Step Pipeline Layout"),
+                bind_group_layouts: &[&jfa_step_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let jfa_step_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("JFA Step Pipeline"),
+            layout: Some(&jfa_step_pipeline_layout),
+            module: &jfa_step_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // Minmax Pipeline
+        let minmax_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/arrival_minmax.wgsl"));
+
+        let minmax_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("MinMax Pipeline Layout"),
+                bind_group_layouts: &[&minmax_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let minmax_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("MinMax Pipeline"),
+            layout: Some(&minmax_pipeline_layout),
+            module: &minmax_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // JFA Render Pipeline
+        let jfa_render_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/render.wgsl"));
+
+        let jfa_render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("JFA Render Pipeline Layout"),
+                bind_group_layouts: &[&jfa_render_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let jfa_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("JFA Render Pipeline"),
+            layout: Some(&jfa_render_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: None,
+                module: &jfa_render_shader,
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: None,
+                module: &jfa_render_shader,
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
-                    blend: Some(wgpu::BlendState {
-                        alpha: wgpu::BlendComponent::REPLACE,
-                        color: wgpu::BlendComponent::REPLACE,
-                    }),
+                    blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-                polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
-                unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
-                conservative: false,
-            },
+            primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // Stop Points Pipeline
+        let stop_points_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/stop_points.wgsl"));
+
+        let stop_points_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Stop Points Pipeline Layout"),
+                bind_group_layouts: &[&stop_points_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let stop_points_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Stop Points Pipeline"),
+            layout: Some(&stop_points_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &stop_points_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
             },
-            // If the pipeline will be used with a multiview render pass, this
-            // tells wgpu to render to just specific texture layers.
+            fragment: Some(wgpu::FragmentState {
+                module: &stop_points_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format, // same as swapchain/surface
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
@@ -268,16 +885,58 @@ impl RenderState {
             device,
             queue,
             config,
-            render_pipeline,
-            bind_group,
+
+            num_stops: gpu_grid_stops.len() as u32,
+
+            gpu_grid_stops_buffer,
+
+            jfa_seed_pipeline,
+            jfa_seed_bind_group,
+            jfa_seed_bind_group_layout,
+
+            jfa_step_pipeline,
+            jfa_step_bind_group_a,
+            jfa_step_bind_group_b,
+            jfa_step_bind_group_layout,
+
+            minmax_pipeline,
+            minmax_bind_group_layout,
+            minmax_bind_group_a,
+            minmax_bind_group_b,
+            minmax_buffer,
+
+            jfa_render_pipeline,
+            jfa_render_bind_group_a,
+            jfa_render_bind_group_b,
+            jfa_render_bind_group_layout,
+
+            stop_points_pipeline,
+            stop_points_bind_group,
+            stop_points_bind_group_layout,
 
             shader_config,
             shader_config_buffer,
+
+            jfa_config,
+            jfa_config_buffer,
+
+            jfa_texture_a,
+            jfa_texture_b,
+            jfa_texture_a_view,
+            jfa_texture_b_view,
+
+            jfa_jump_values_buffer,
+            jfa_jump_count: jumps.len() as u32,
+            shader_config_jump_offset_bytes: jfa_config_jump_offset_bytes,
+
+            timestamp_query_set,
+            timestamp_resolve_buffer,
+            timestamp_readback_buffer,
         }
     }
 
     /// Update the shader config buffer (used to give real time input to the shader, like window resizes and such)
-    fn upload_shader_config(&self) {
+    pub fn upload_shader_config(&self) {
         self.queue.write_buffer(
             &self.shader_config_buffer,
             0,
@@ -285,7 +944,17 @@ impl RenderState {
         );
     }
 
-    fn zoom(&mut self, zoom_steps: f32, cursor_px: winit::dpi::PhysicalPosition<f64>) {
+    /// Update the jfa config buffer (used to give real time input to the shader, like window resizes and such)
+    pub fn upload_jfa_config(&self) {
+        self.queue.write_buffer(
+            &self.jfa_config_buffer,
+            0,
+            bytemuck::cast_slice(&[self.jfa_config]),
+        );
+    }
+
+    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
+    pub fn zoom(&mut self, zoom_steps: f32, cursor_px: winit::dpi::PhysicalPosition<f64>) {
         if zoom_steps == 0.0 || self.config.width == 0 || self.config.height == 0 {
             return;
         }
@@ -311,7 +980,7 @@ impl RenderState {
 
         // pixel -> normalized
         let u = x / w; // left..right
-        let v = 1.0 - (y / h); // bottom..top (since map has north as up)
+        let v = y / h; // bottom..top (since map has north as up)
 
         // world under cursor before zoom
         let world_lon = min_lon + u * lon_span;
@@ -338,9 +1007,29 @@ impl RenderState {
         self.shader_config.bbox_max_lat = new_max_lat;
 
         self.upload_shader_config();
+
+        // jfa config update
+        let meters_per_pixel = meters_per_pixel(
+            Position {
+                lat: self.shader_config.bbox_min_lat as f32,
+                lon: self.shader_config.bbox_min_lon as f32,
+            },
+            Position {
+                lat: self.shader_config.bbox_max_lat as f32,
+                lon: self.shader_config.bbox_max_lon as f32,
+            },
+            self.jfa_config.jfa_width as u32,
+            self.jfa_config.jfa_height as u32,
+        );
+
+        self.jfa_config.meters_per_px_x = meters_per_pixel.0;
+        self.jfa_config.meters_per_px_y = meters_per_pixel.1;
+
+        self.upload_jfa_config();
     }
 
-    fn pan(&mut self, dx_px: f32, dy_px: f32) {
+    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
+    pub fn pan(&mut self, dx_px: f32, dy_px: f32) {
         if self.config.width == 0 || self.config.height == 0 {
             return;
         }
@@ -362,13 +1051,14 @@ impl RenderState {
 
         // drag down should move map down on screen:
         // world lat decreases when moving down
-        self.shader_config.bbox_min_lat -= dlat;
-        self.shader_config.bbox_max_lat -= dlat;
+        self.shader_config.bbox_min_lat += dlat;
+        self.shader_config.bbox_max_lat += dlat;
 
         self.upload_shader_config();
     }
 
-    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             // recalculate bounding box to adjust to new size
             // pin the bbox min corner, and just shrink/grow bounding box to keep constant effective zoom level
@@ -386,297 +1076,500 @@ impl RenderState {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
+            // update shader_config
             self.shader_config.width = new_size.width as f32;
             self.shader_config.height = new_size.height as f32;
             self.upload_shader_config();
+
+            // update jfa_config
+            self.jfa_config.jfa_width = max(1, new_size.width / JFA_SCALE) as f32;
+            self.jfa_config.jfa_height = max(1, new_size.height / JFA_SCALE) as f32;
+
+            let meters_per_pixel = meters_per_pixel(
+                Position {
+                    lat: self.shader_config.bbox_min_lat as f32,
+                    lon: self.shader_config.bbox_min_lon as f32,
+                },
+                Position {
+                    lat: self.shader_config.bbox_max_lat as f32,
+                    lon: self.shader_config.bbox_max_lon as f32,
+                },
+                max(1, new_size.width / JFA_SCALE),
+                max(1, new_size.height / JFA_SCALE),
+            );
+
+            self.jfa_config.meters_per_px_x = meters_per_pixel.0;
+            self.jfa_config.meters_per_px_y = meters_per_pixel.1;
+
+            self.upload_jfa_config();
+
+            self.recreate_jfa_textures_and_bind_groups();
         }
     }
 
-    fn render(&self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+    // TODO: this functions is bad and ugly. i would like to swap it for a much simpler solution if possible
+    /// recreates textures and bind groups for the jump flood algorithm. Needed when resizing, because texture changes size.
+    pub fn recreate_jfa_textures_and_bind_groups(&mut self) {
+        let jfa_texture_desc = wgpu::TextureDescriptor {
+            size: wgpu::Extent3d {
+                width: self.jfa_config.jfa_width as u32,
+                height: self.jfa_config.jfa_height as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: JFA_TEXTURE_FORMAT,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            label: None,
+            view_formats: &[],
+        };
+
+        self.jfa_texture_a = self.device.create_texture(&jfa_texture_desc);
+        self.jfa_texture_b = self.device.create_texture(&jfa_texture_desc);
+        self.jfa_texture_a_view = self.jfa_texture_a.create_view(&Default::default());
+        self.jfa_texture_b_view = self.jfa_texture_b.create_view(&Default::default());
+
+        // Seed bind group (writes into texture_a)
+        self.jfa_seed_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Seed Bind Group"),
+            layout: &self.jfa_seed_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Step bind group A -> reads texture_a, writes texture_b
+        self.jfa_step_bind_group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group A"),
+            layout: &self.jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Step bind group B -> read texture_b, writes texture_a
+        self.jfa_step_bind_group_b = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group B"),
+            layout: &self.jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.minmax_bind_group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group A"),
+            layout: &self.minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.minmax_bind_group_b = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group B"),
+            layout: &self.minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Render bind groups (sampling)
+        self.jfa_render_bind_group_a = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Render Bind Group A"),
+            layout: &self.jfa_render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.jfa_render_bind_group_b = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Render Bind Group B"),
+            layout: &self.jfa_render_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+    }
+
+    #[instrument(skip(self))]
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let _span = info_span!("frame").entered();
+
+        let mut q = 0u32; // query index for gpu timers
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let output = self.surface.get_current_texture()?;
 
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
+            // JFA Seed Pass
+            {
+                encoder.clear_texture(&self.jfa_texture_a, &wgpu::ImageSubresourceRange::default());
+                // encoder.clear_texture(&self.jfa_texture_b, &wgpu::ImageSubresourceRange::default());
 
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.draw(0..3, 0..1);
+                let mut jfa_seed_compute_pass =
+                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("Seed Compute Pass"),
+                        timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                            query_set: &self.timestamp_query_set,
+                            beginning_of_pass_write_index: Some(q),
+                            end_of_pass_write_index: Some(q + 1),
+                        }),
+                    });
+
+                q += 2; // increment q for seed enter and close
+
+                jfa_seed_compute_pass.set_pipeline(&self.jfa_seed_pipeline);
+                jfa_seed_compute_pass.set_bind_group(0, &self.jfa_seed_bind_group, &[]);
+
+                let wg = 256u32;
+                let n = self.num_stops; // store this somewhere
+                let dispatch_x = (n + wg - 1) / wg;
+                jfa_seed_compute_pass.dispatch_workgroups(dispatch_x, 1, 1);
+            }
+
+            // JFA Step Passes
+            // flips read/write between texture_a and texture_b
+            // false -> read texture_a, write texture_b
+            // true -> read texture_b, write texture_a
+            let mut flip = false;
+            {
+                for jump_size_index in 0..self.jfa_jump_count {
+                    // Copy one f32 jump value into ShaderConfig.jump_size
+                    let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
+                    encoder.copy_buffer_to_buffer(
+                        &self.jfa_jump_values_buffer,
+                        src_offset,
+                        &self.jfa_config_buffer,
+                        self.shader_config_jump_offset_bytes,
+                        std::mem::size_of::<f32>() as u64,
+                    );
+
+                    let mut jfa_step_compute_pass =
+                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("Seed Compute Pass"),
+                            timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                                query_set: &self.timestamp_query_set,
+                                beginning_of_pass_write_index: Some(q),
+                                end_of_pass_write_index: Some(q + 1),
+                            }),
+                        });
+
+                    q += 2; // increment q for step enter and close
+
+                    jfa_step_compute_pass.set_pipeline(&self.jfa_step_pipeline);
+                    if flip {
+                        jfa_step_compute_pass.set_bind_group(0, &self.jfa_step_bind_group_b, &[]);
+                    } else {
+                        jfa_step_compute_pass.set_bind_group(0, &self.jfa_step_bind_group_a, &[]);
+                    }
+
+                    let wg_size_x = 16u32;
+                    let wg_size_y = 16u32;
+
+                    let dispatch_x = (self.jfa_config.jfa_width as u32 + wg_size_x - 1) / wg_size_x;
+                    let dispatch_y =
+                        (self.jfa_config.jfa_height as u32 + wg_size_y - 1) / wg_size_y;
+
+                    jfa_step_compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+
+                    flip = !flip;
+                }
+            }
+
+            // Minmax Pass (finding lowest and greatest pixel arrival_time)
+            {
+                // reset minmax buffer each frame
+                let minmax_init: [u32; 2] = [u32::MAX, 0];
+                self.queue
+                    .write_buffer(&self.minmax_buffer, 0, bytemuck::cast_slice(&minmax_init));
+
+                let minmax_bind_group = if flip {
+                    &self.minmax_bind_group_a
+                } else {
+                    &self.minmax_bind_group_b
+                };
+
+                {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("Arrival MinMax Pass"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(&self.minmax_pipeline);
+                    pass.set_bind_group(0, minmax_bind_group, &[]);
+
+                    let wg_size_x = 16u32;
+                    let wg_size_y = 16u32;
+                    let dispatch_x = (self.jfa_config.jfa_width as u32 + wg_size_x - 1) / wg_size_x;
+                    let dispatch_y =
+                        (self.jfa_config.jfa_height as u32 + wg_size_y - 1) / wg_size_y;
+                    pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+                }
+            }
+
+            // Render Pass (turning best stop index texture into an actual image with colors)
+            {
+                let view = output
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+
+                // note: after loop, if flip is true -> then final texture is in texture_a (and its in texture_b otherwise)
+                let final_texture_render_bind_group = if flip {
+                    &self.jfa_render_bind_group_a
+                } else {
+                    &self.jfa_render_bind_group_b
+                };
+
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("JFA Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.1,
+                                g: 0.2,
+                                b: 0.3,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
+                        query_set: &self.timestamp_query_set,
+                        beginning_of_pass_write_index: Some(q),
+                        end_of_pass_write_index: Some(q + 1),
+                    }),
+                    multiview_mask: None,
+                });
+
+                q += 2; // increment q for render enter and close
+
+                render_pass.set_pipeline(&self.jfa_render_pipeline);
+                render_pass.set_bind_group(0, final_texture_render_bind_group, &[]);
+                render_pass.draw(0..3, 0..1);
+            }
+
+            // Stop points overlay pass (draw points on top of heatmap)
+            {
+                let view = output
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+
+                let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Stop Points Overlay Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load, // keep heatmap already drawn
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
+                        query_set: &self.timestamp_query_set,
+                        beginning_of_pass_write_index: Some(q),
+                        end_of_pass_write_index: Some(q + 1),
+                    }), // or add timestamps if you want
+                    multiview_mask: None,
+                });
+
+                q += 2; // increment q for stop points enter and close
+
+                overlay_pass.set_pipeline(&self.stop_points_pipeline);
+                overlay_pass.set_bind_group(0, &self.stop_points_bind_group, &[]);
+                overlay_pass.draw(0..6, 0..self.num_stops); // 6 verts per stop instance
+            }
         }
+
+        encoder.resolve_query_set(
+            &self.timestamp_query_set,
+            0..q,
+            &self.timestamp_resolve_buffer,
+            0,
+        );
+        encoder.copy_buffer_to_buffer(
+            &self.timestamp_resolve_buffer,
+            0,
+            &self.timestamp_readback_buffer,
+            0,
+            (q as u64) * std::mem::size_of::<u64>() as u64,
+        );
 
         self.queue.submit(Some(encoder.finish()));
         output.present();
 
+        // Wait for GPU to complete this submission (simple/minimal approach)
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+
+        // Map and read timestamps
+        let slice = self.timestamp_readback_buffer.slice(..(q as u64 * 8));
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+
+        let data = slice.get_mapped_range();
+        let timestamps: &[u64] = bytemuck::cast_slice(&data);
+
+        // Convert ticks -> ns
+        let period_ns = self.queue.get_timestamp_period() as f64;
+
+        // Example logging:
+        // pair 0 = seed, next pairs = steps, last pair = render
+        for i in 0..(q / 2) as usize {
+            let t0 = timestamps[2 * i] as f64;
+            let t1 = timestamps[2 * i + 1] as f64;
+            let dt_ns = (t1 - t0) * period_ns;
+            println!("gpu pass[{i}] = {:.3} ms", dt_ns / 1_000_000.0);
+        }
+
+        drop(data);
+        self.timestamp_readback_buffer.unmap();
+
         Ok(())
-    }
-}
-
-// Holds data needed before the window is created, and the render state after
-struct App {
-    // Pre-init data
-    gpu_grid_cell_keys: Vec<GpuGridCellKey>,
-    gpu_grid_cell_vals: Vec<GpuGridCellVal>,
-    gpu_grid_stops: Vec<[f32; 4]>,
-    shader_config: ShaderConfig,
-
-    // Post-init data
-    window: Option<Arc<Window>>,
-    render_state: Option<RenderState>,
-    // input state
-    cursor_pos_px: Option<winit::dpi::PhysicalPosition<f64>>,
-    dragging: bool,
-    last_drag_pos_px: Option<winit::dpi::PhysicalPosition<f64>>,
-}
-
-impl App {
-    fn new(
-        gtfs_data: &GTFSData,
-        arrival_times: &HashMap<u32, u32>,
-        gpu_grid_cells: Vec<GpuGridCell>,
-        gpu_grid_stops: Vec<[f32; 4]>,
-        bbox_min_position: Position,
-        bbox_max_position: Position,
-    ) -> Self {
-        // derive image dimensions from the bounding box aspect ratio
-        // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
-        let mid_lat = (bbox_min_position.lat + bbox_max_position.lat) / 2.0;
-        let physical_width = (bbox_max_position.lon - bbox_min_position.lon) * mid_lat.cos();
-        let physical_height = bbox_max_position.lat - bbox_min_position.lat;
-        let aspect_ratio = physical_width / physical_height;
-        let (pixels_width, pixels_height) = if aspect_ratio >= 1.0 {
-            (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
-        } else {
-            ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
-        };
-
-        let mut stop_positions: Vec<[f32; 3]> = Vec::new();
-        for stop in gtfs_data.stops.values() {
-            if let Some(&arrival_time) = arrival_times.get(&stop.stop_id) {
-                stop_positions.push([
-                    stop.position.lat as f32,
-                    stop.position.lon as f32,
-                    arrival_time as f32,
-                ]);
-            }
-        }
-
-        // TODO: replace max_time with actual processing stage to calculate it
-        let begin_time = DEPART_INSTANT.time;
-        let max_time = DEPART_INSTANT.time + 18000; // shitty hack to make it display SOMETHING
-
-        let shader_config = ShaderConfig {
-            width: pixels_width as f32,
-            height: pixels_height as f32,
-            bbox_min_lat: bbox_min_position.lat as f32,
-            bbox_min_lon: bbox_min_position.lon as f32,
-            bbox_max_lat: bbox_max_position.lat as f32,
-            bbox_max_lon: bbox_max_position.lon as f32,
-            gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
-            begin_time: begin_time as f32,
-            max_time: max_time as f32,
-            walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
-        };
-
-        let (gpu_grid_cell_keys, gpu_grid_cell_vals) = build_gpu_hash(&gpu_grid_cells);
-
-        Self {
-            gpu_grid_cell_keys,
-            gpu_grid_cell_vals,
-            gpu_grid_stops,
-            shader_config,
-            window: None,
-            render_state: None,
-            cursor_pos_px: None,
-            dragging: false,
-            last_drag_pos_px: None,
-        }
-    }
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title("HeatMapping")
-                        .with_inner_size(winit::dpi::LogicalSize::new(
-                            self.shader_config.width,
-                            self.shader_config.height,
-                        )),
-                )
-                .unwrap(),
-        );
-
-        // resumed() is not async, so we block on the async init here
-        let render_state = pollster::block_on(RenderState::new(
-            window.clone(),
-            &self.gpu_grid_cell_keys,
-            &self.gpu_grid_cell_vals,
-            &self.gpu_grid_stops,
-            self.shader_config,
-        ));
-
-        self.window = Some(window);
-        self.render_state = Some(render_state);
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        match event {
-            WindowEvent::CloseRequested => {
-                // unset window stuff, so that the program knows the window was closed rather than just being confused
-                self.render_state = None;
-                self.window = None;
-
-                event_loop.exit(); // and also stop the loop
-            }
-            WindowEvent::Resized(new_size) => {
-                if let Some(state) = &mut self.render_state {
-                    state.resize(new_size);
-                }
-            }
-            WindowEvent::MouseWheel {
-                device_id,
-                delta,
-                phase,
-            } => {
-                // TODO: make helper function to calculate scroll steps so that it can be used elsewhere if needed
-                // TODO: implement pinch zoom
-                if let (Some(state), Some(window), Some(cursor_pos_px)) =
-                    (&mut self.render_state, &self.window, self.cursor_pos_px)
-                {
-                    let scroll_steps: f32 = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y,
-                        MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / -40.0, // TODO: tune magic number
-                    };
-
-                    state.zoom(scroll_steps, cursor_pos_px);
-
-                    // request redraw after zooming
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                // if dragging, pan by delta from previous cursor position
-                if self.dragging {
-                    if let (Some(prev), Some(state)) =
-                        (self.last_drag_pos_px, &mut self.render_state)
-                    {
-                        let dx = position.x as f32 - prev.x as f32;
-                        let dy = position.y as f32 - prev.y as f32;
-                        state.pan(dx, dy);
-
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                    self.last_drag_pos_px = Some(position);
-                }
-
-                self.cursor_pos_px = Some(position);
-            }
-
-            WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left {
-                    match state {
-                        ElementState::Pressed => {
-                            self.dragging = true;
-                            self.last_drag_pos_px = self.cursor_pos_px;
-                        }
-                        ElementState::Released => {
-                            self.dragging = false;
-                            self.last_drag_pos_px = None;
-                        }
-                    }
-                }
-
-                if button == MouseButton::Right && state == ElementState::Pressed {
-                    if let (Some(state), Some(pos)) =
-                        (self.render_state.as_ref(), self.cursor_pos_px)
-                    {
-                        let w = state.config.width as f32;
-                        let h = state.config.height as f32;
-                        if w > 0.0 && h > 0.0 {
-                            // clamp cursor to window
-                            let x = (pos.x as f32).clamp(0.0, w);
-                            let y = (pos.y as f32).clamp(0.0, h);
-
-                            // normalized coords
-                            let u = x / w; // 0..1 left->right
-                            let v = 1.0 - (y / h); // 0..1 bottom->top
-
-                            // bbox -> world
-                            let min_lon = state.shader_config.bbox_min_lon;
-                            let max_lon = state.shader_config.bbox_max_lon;
-                            let min_lat = state.shader_config.bbox_min_lat;
-                            let max_lat = state.shader_config.bbox_max_lat;
-
-                            let lon = min_lon + u * (max_lon - min_lon);
-                            let lat = max_lat - v * (max_lat - min_lat);
-
-                            println!("clicked lat/lon: {:.6}, {:.6}", lat, lon);
-                        }
-                    }
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                if let Some(state) = &self.render_state {
-                    match state.render() {
-                        Ok(()) => {}
-                        // Reconfigure if the surface is lost
-                        Err(wgpu::SurfaceError::Lost) => {
-                            if let Some(state) = &mut self.render_state {
-                                let size = winit::dpi::PhysicalSize::new(
-                                    state.config.width,
-                                    state.config.height,
-                                );
-                                state.resize(size);
-                            }
-                        }
-                        Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                        Err(e) => eprintln!("Render error: {e:?}"),
-                    }
-                }
-
-                // TODO: figure out when to redraw window and how to make it do that just when it needs to (if thats not what it's already doing)
-                // Request another frame immediately for continuous rendering
-                // if let Some(window) = &self.window {
-                //     window.request_redraw();
-                // }
-            }
-            _ => {}
-        }
     }
 }
 
@@ -688,24 +1581,15 @@ pub async fn run(
     arrival_times: &HashMap<u32, u32>,
     gpu_grid_cells: Vec<GpuGridCell>,
     gpu_grid_stops: Vec<[f32; 4]>,
-    bbox_min_position: Position,
-    bbox_max_position: Position,
 ) {
     let event_loop = EventLoop::new().unwrap();
 
-    let mut app = App::new(
-        gtfs_data,
-        arrival_times,
-        gpu_grid_cells,
-        gpu_grid_stops,
-        bbox_min_position,
-        bbox_max_position,
-    );
+    let mut app = App::new(gtfs_data, arrival_times, gpu_grid_cells, gpu_grid_stops);
 
     event_loop.run_app(&mut app).unwrap();
 }
 
-fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGridCellVal>) {
+pub fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGridCellVal>) {
     // TODO: what's the times 2 for?
     let cap = (cells.len() * 2).next_power_of_two(); // calculate power of 2 size for hash map (to make gpu happy)
     let empty = GpuGridCellKey {
@@ -741,24 +1625,4 @@ fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGridCel
     }
 
     return (keys, vals);
-}
-
-/// hash function for gpu compatibility (used to compute hashes for a hashmap that can be used within shaders)
-fn hash2_i32(a: i32, b: i32) -> u32 {
-    let mut x = a as u32;
-    let mut y = b as u32;
-
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x7feb352d);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x846ca68b);
-    x ^= x >> 16;
-
-    y ^= y >> 16;
-    y = y.wrapping_mul(0x7feb352d);
-    y ^= y >> 15;
-    y = y.wrapping_mul(0x846ca68b);
-    y ^= y >> 16;
-
-    x ^ y.rotate_left(16)
 }

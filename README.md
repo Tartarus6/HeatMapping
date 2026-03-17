@@ -36,7 +36,7 @@ The application will have 2 modes:
 
 In order to run it, you'll first need some GTFS data for the heatmap to be based on. For now all of the GTFS paths and stuff are hard-coded to work specifically for the data from OV API's data for the netherlands.
 To get the data, click [this](https://gtfs.ovapi.nl/nl/gtfs-nl.zip) link to download the data.
-Put that zip file in the `src/lib/` directory of this project, and unzip it.
+Put that zip file in the `GTFS` directory of this project, and unzip it.
 
 Once you've got the data in there, run the `cargo run --release` command to compile and execute the program. The release flag is reccomended because this is a rather intensive program, and it can take a very long time to finish without the compiler optimizations.
 
