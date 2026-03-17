@@ -230,6 +230,49 @@ pub struct GTFSData {
     pub connections: HashMap<u32, Vec<Connection>>,
 }
 
+// --- Shader Structs ---
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuGridCellKey {
+    pub lat: i32,
+    pub lon: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuGridCellVal {
+    pub start: u32,
+    pub count: u32,
+}
+
+// TODO: switch width, height, begin_time, and max_time to be u32
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ShaderConfig {
+    pub width: f32,  // how many pixels wide the image is
+    pub height: f32, // how many pixels high the image is
+    pub bbox_min_lat: f32,
+    pub bbox_min_lon: f32,
+    pub bbox_max_lat: f32,
+    pub bbox_max_lon: f32,
+    pub gpu_grid_cell_size: f32, // size of each cell (in radians)
+    pub begin_time: f32,         // departure time in seconds since midnight
+    // TODO: fix max time
+    pub max_time: f32, // latest arrival time in seconds since midnight
+    pub inverse_walk_speed_mps: f32, // walking speed in seconds per meter
+}
+
+// TODO: switch width, height, and jump_size to be u32
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct JFAConfig {
+    pub jfa_width: f32,       // how many pixels wide the image is
+    pub jfa_height: f32,      // how many pixels high the image is
+    pub jump_size: f32,       // jump size for JFA
+    pub meters_per_px_x: f32, // approximate number of meters per x pixel
+    pub meters_per_px_y: f32, // approximate number of meters per y pixel
+}
+
 /// parses stop_id, handling both "600737" and "stoparea:600737" formats
 pub fn parse_stop_id(stop_id_str: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let stop_id: u32;

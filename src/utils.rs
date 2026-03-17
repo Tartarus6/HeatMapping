@@ -91,3 +91,23 @@ pub fn bbox_from_center(
 
     (min, max)
 }
+
+/// hash function for gpu compatibility (used to compute hashes for a hashmap that can be used within shaders)
+pub fn hash2_i32(a: i32, b: i32) -> u32 {
+    let mut x = a as u32;
+    let mut y = b as u32;
+
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846ca68b);
+    x ^= x >> 16;
+
+    y ^= y >> 16;
+    y = y.wrapping_mul(0x7feb352d);
+    y ^= y >> 15;
+    y = y.wrapping_mul(0x846ca68b);
+    y ^= y >> 16;
+
+    x ^ y.rotate_left(16)
+}

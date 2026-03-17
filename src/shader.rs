@@ -7,7 +7,9 @@ use std::sync::Arc;
 use crate::{
     DEPART_INSTANT, GTFSData, GpuGridCell, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, Position,
     WALKING_SPEED,
-    utils::{bbox_from_center, meters_per_pixel},
+    app::App,
+    structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
+    utils::{bbox_from_center, hash2_i32, meters_per_pixel},
 };
 
 use tracing::{info_span, instrument};
@@ -19,102 +21,62 @@ use winit::{
     window::{Window, WindowId},
 };
 
+const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+
 // TODO: add a scale reference (like google maps has) showing how zoomed in the view is
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuGridCellKey {
-    lat: i32,
-    lon: i32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuGridCellVal {
-    start: u32,
-    count: u32,
-}
-
-// TODO: switch width, height, begin_time, and max_time to be u32
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ShaderConfig {
-    width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels high the image is
-    bbox_min_lat: f32,
-    bbox_min_lon: f32,
-    bbox_max_lat: f32,
-    bbox_max_lon: f32,
-    gpu_grid_cell_size: f32, // size of each cell (in radians)
-    begin_time: f32,         // departure time in seconds since midnight
-    // TODO: fix max time
-    max_time: f32,               // latest arrival time in seconds since midnight
-    inverse_walk_speed_mps: f32, // walking speed in seconds per meter
-}
-
-// TODO: switch width, height, and jump_size to be u32
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct JFAConfig {
-    jfa_width: f32,       // how many pixels wide the image is
-    jfa_height: f32,      // how many pixels high the image is
-    jump_size: f32,       // jump size for JFA
-    meters_per_px_x: f32, // approximate number of meters per x pixel
-    meters_per_px_y: f32, // approximate number of meters per y pixel
-}
-
 // Holds all the wgpu state needed to render
-struct RenderState {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
+pub struct RenderState {
+    pub surface: wgpu::Surface<'static>,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub config: wgpu::SurfaceConfiguration,
 
-    num_stops: u32,
+    pub num_stops: u32,
 
-    gpu_grid_stops_buffer: wgpu::Buffer,
+    pub gpu_grid_stops_buffer: wgpu::Buffer,
 
-    jfa_seed_pipeline: wgpu::ComputePipeline,
-    jfa_seed_bind_group: wgpu::BindGroup,
-    jfa_seed_bind_group_layout: wgpu::BindGroupLayout,
+    pub jfa_seed_pipeline: wgpu::ComputePipeline,
+    pub jfa_seed_bind_group: wgpu::BindGroup,
+    pub jfa_seed_bind_group_layout: wgpu::BindGroupLayout,
 
-    jfa_step_pipeline: wgpu::ComputePipeline,
-    jfa_step_bind_group_a: wgpu::BindGroup,
-    jfa_step_bind_group_b: wgpu::BindGroup,
-    jfa_step_bind_group_layout: wgpu::BindGroupLayout,
+    pub jfa_step_pipeline: wgpu::ComputePipeline,
+    pub jfa_step_bind_group_a: wgpu::BindGroup,
+    pub jfa_step_bind_group_b: wgpu::BindGroup,
+    pub jfa_step_bind_group_layout: wgpu::BindGroupLayout,
 
-    jfa_render_pipeline: wgpu::RenderPipeline,
-    jfa_render_bind_group_a: wgpu::BindGroup,
-    jfa_render_bind_group_b: wgpu::BindGroup,
-    jfa_render_bind_group_layout: wgpu::BindGroupLayout,
+    pub jfa_render_pipeline: wgpu::RenderPipeline,
+    pub jfa_render_bind_group_a: wgpu::BindGroup,
+    pub jfa_render_bind_group_b: wgpu::BindGroup,
+    pub jfa_render_bind_group_layout: wgpu::BindGroupLayout,
 
-    stop_points_pipeline: wgpu::RenderPipeline,
-    stop_points_bind_group: wgpu::BindGroup,
-    stop_points_bind_group_layout: wgpu::BindGroupLayout,
+    pub stop_points_pipeline: wgpu::RenderPipeline,
+    pub stop_points_bind_group: wgpu::BindGroup,
+    pub stop_points_bind_group_layout: wgpu::BindGroupLayout,
 
-    shader_config: ShaderConfig,        // CPU-side copy
-    shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+    pub shader_config: ShaderConfig,        // CPU-side copy
+    pub shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
 
-    jfa_config: JFAConfig,           // CPU-side copy
-    jfa_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+    pub jfa_config: JFAConfig,           // CPU-side copy
+    pub jfa_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
 
-    jfa_texture_a: wgpu::Texture,
-    jfa_texture_b: wgpu::Texture,
-    jfa_texture_a_view: wgpu::TextureView,
-    jfa_texture_b_view: wgpu::TextureView,
+    pub jfa_texture_a: wgpu::Texture,
+    pub jfa_texture_b: wgpu::Texture,
+    pub jfa_texture_a_view: wgpu::TextureView,
+    pub jfa_texture_b_view: wgpu::TextureView,
 
-    jfa_jump_values_buffer: wgpu::Buffer,
-    jfa_jump_count: u32,
+    pub jfa_jump_values_buffer: wgpu::Buffer,
+    pub jfa_jump_count: u32,
     // byte offset of `jump_size` field inside ShaderConfig
-    shader_config_jump_offset_bytes: u64,
+    pub shader_config_jump_offset_bytes: u64,
 
-    timestamp_query_set: wgpu::QuerySet,
-    timestamp_resolve_buffer: wgpu::Buffer,
-    timestamp_readback_buffer: wgpu::Buffer,
+    pub timestamp_query_set: wgpu::QuerySet,
+    pub timestamp_resolve_buffer: wgpu::Buffer,
+    pub timestamp_readback_buffer: wgpu::Buffer,
 }
 
 impl RenderState {
-    async fn new(
+    pub async fn new(
         window: Arc<Window>,
         gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
         gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
@@ -253,7 +215,6 @@ impl RenderState {
             mapped_at_creation: false,
         });
 
-        // TODO: make it obvious what each component of the color at a pixel is (x, y, valid, None) and such
         // TODO: fix duplication of texture format and of texture usage
         // texture buffers
         let jfa_texture_desc = wgpu::TextureDescriptor {
@@ -265,7 +226,7 @@ impl RenderState {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
+            format: JFA_TEXTURE_FORMAT,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST,
@@ -316,7 +277,7 @@ impl RenderState {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::R32Uint,
+                            format: JFA_TEXTURE_FORMAT,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -346,7 +307,7 @@ impl RenderState {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R32Uint,
+                            format: JFA_TEXTURE_FORMAT,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -358,7 +319,7 @@ impl RenderState {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::R32Uint,
+                            format: JFA_TEXTURE_FORMAT,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -768,7 +729,7 @@ impl RenderState {
     }
 
     /// Update the shader config buffer (used to give real time input to the shader, like window resizes and such)
-    fn upload_shader_config(&self) {
+    pub fn upload_shader_config(&self) {
         self.queue.write_buffer(
             &self.shader_config_buffer,
             0,
@@ -777,7 +738,7 @@ impl RenderState {
     }
 
     /// Update the jfa config buffer (used to give real time input to the shader, like window resizes and such)
-    fn upload_jfa_config(&self) {
+    pub fn upload_jfa_config(&self) {
         self.queue.write_buffer(
             &self.jfa_config_buffer,
             0,
@@ -785,7 +746,8 @@ impl RenderState {
         );
     }
 
-    fn zoom(&mut self, zoom_steps: f32, cursor_px: winit::dpi::PhysicalPosition<f64>) {
+    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
+    pub fn zoom(&mut self, zoom_steps: f32, cursor_px: winit::dpi::PhysicalPosition<f64>) {
         if zoom_steps == 0.0 || self.config.width == 0 || self.config.height == 0 {
             return;
         }
@@ -859,7 +821,8 @@ impl RenderState {
         self.upload_jfa_config();
     }
 
-    fn pan(&mut self, dx_px: f32, dy_px: f32) {
+    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
+    pub fn pan(&mut self, dx_px: f32, dy_px: f32) {
         if self.config.width == 0 || self.config.height == 0 {
             return;
         }
@@ -887,7 +850,8 @@ impl RenderState {
         self.upload_shader_config();
     }
 
-    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             // recalculate bounding box to adjust to new size
             // pin the bbox min corner, and just shrink/grow bounding box to keep constant effective zoom level
@@ -938,7 +902,7 @@ impl RenderState {
 
     // TODO: this functions is bad and ugly. i would like to swap it for a much simpler solution if possible
     /// recreates textures and bind groups for the jump flood algorithm. Needed when resizing, because texture changes size.
-    fn recreate_jfa_textures_and_bind_groups(&mut self) {
+    pub fn recreate_jfa_textures_and_bind_groups(&mut self) {
         let jfa_texture_desc = wgpu::TextureDescriptor {
             size: wgpu::Extent3d {
                 width: self.jfa_config.jfa_width as u32,
@@ -948,7 +912,7 @@ impl RenderState {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
+            format: JFA_TEXTURE_FORMAT,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST,
@@ -1074,7 +1038,7 @@ impl RenderState {
     }
 
     #[instrument(skip(self))]
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let _span = info_span!("frame").entered();
 
         let mut q = 0u32; // query index for gpu timers
@@ -1298,268 +1262,6 @@ impl RenderState {
     }
 }
 
-// Holds data needed before the window is created, and the render state after
-struct App {
-    // Pre-init data
-    gpu_grid_cell_keys: Vec<GpuGridCellKey>,
-    gpu_grid_cell_vals: Vec<GpuGridCellVal>,
-    gpu_grid_stops: Vec<[f32; 4]>,
-    shader_config: ShaderConfig,
-    jfa_config: JFAConfig,
-
-    // Post-init data
-    window: Option<Arc<Window>>,
-    render_state: Option<RenderState>,
-    // input state
-    cursor_pos_px: Option<winit::dpi::PhysicalPosition<f64>>,
-    dragging: bool,
-    last_drag_pos_px: Option<winit::dpi::PhysicalPosition<f64>>,
-}
-
-impl App {
-    fn new(
-        gtfs_data: &GTFSData,
-        arrival_times: &HashMap<u32, u32>,
-        gpu_grid_cells: Vec<GpuGridCell>,
-        gpu_grid_stops: Vec<[f32; 4]>,
-    ) -> Self {
-        // derive image dimensions from the bounding box aspect ratio
-        // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
-        // let mid_lat = (bbox_min_position.lat + bbox_max_position.lat) / 2.0;
-        // let physical_width = (bbox_max_position.lon - bbox_min_position.lon) * mid_lat.cos();
-        // let physical_height = bbox_max_position.lat - bbox_min_position.lat;
-        // let aspect_ratio = physical_width / physical_height;
-        // let (pixels_width, pixels_height) = if aspect_ratio >= 1.0 {
-        //     (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
-        // } else {
-        //     ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
-        // };
-
-        // TODO: replace max_time with actual processing stage to calculate it
-        let begin_time = DEPART_INSTANT.time;
-        let max_time = DEPART_INSTANT.time + 36000; // shitty hack to make it display SOMETHING
-
-        let shader_config = ShaderConfig {
-            width: MAX_DIM as f32,  // dummy init value (will be overwritten)
-            height: MAX_DIM as f32, // dummy init value (will be overwritten)
-            bbox_min_lat: 0.0,      // dummy init value (will be overwritten)
-            bbox_min_lon: 1.0,      // dummy init value (will be overwritten)
-            bbox_max_lat: 0.0,      // dummy init value (will be overwritten)
-            bbox_max_lon: 1.0,      // dummy init value (will be overwritten)
-            gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
-            begin_time: begin_time as f32,
-            max_time: max_time as f32,
-            inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
-        };
-
-        // let jfa_width = max(1, pixels_width / JFA_SCALE);
-        // let jfa_height = max(1, pixels_height / JFA_SCALE);
-
-        // let meters_per_pixel =
-        //     meters_per_pixel(bbox_min_position, bbox_max_position, jfa_width, jfa_height);
-
-        let jfa_config = JFAConfig {
-            jfa_width: 0.0,       // dummy init value (will be overwritten)
-            jfa_height: 0.0,      // dummy init value (will be overwritten)
-            jump_size: 0.0,       // dummy init value (will be overwritten)
-            meters_per_px_x: 0.0, // dummy init value (will be overwritten)
-            meters_per_px_y: 0.0, // dummy init value (will be overwritten)
-        };
-
-        let (gpu_grid_cell_keys, gpu_grid_cell_vals) = build_gpu_hash(&gpu_grid_cells);
-
-        Self {
-            gpu_grid_cell_keys,
-            gpu_grid_cell_vals,
-            gpu_grid_stops,
-            shader_config,
-            jfa_config,
-            window: None,
-            render_state: None,
-            cursor_pos_px: None,
-            dragging: false,
-            last_drag_pos_px: None,
-        }
-    }
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes().with_title("HeatMapping"))
-                .unwrap(),
-        );
-
-        let size = window.inner_size();
-        let center = DEPART_INSTANT.position;
-        let (bbox_min, bbox_max) =
-            bbox_from_center(center, INITIAL_HALF_LAT_SPAN, size.width, size.height);
-
-        // update configs to match real startup window
-        self.shader_config.width = size.width as f32;
-        self.shader_config.height = size.height as f32;
-        self.shader_config.bbox_min_lat = bbox_min.lat as f32;
-        self.shader_config.bbox_min_lon = bbox_min.lon as f32;
-        self.shader_config.bbox_max_lat = bbox_max.lat as f32;
-        self.shader_config.bbox_max_lon = bbox_max.lon as f32;
-
-        let jfa_w = max(1, size.width / JFA_SCALE);
-        let jfa_h = max(1, size.height / JFA_SCALE);
-        self.jfa_config.jfa_width = jfa_w as f32;
-        self.jfa_config.jfa_height = jfa_h as f32;
-
-        let mpp = meters_per_pixel(bbox_min, bbox_max, jfa_w, jfa_h);
-        self.jfa_config.meters_per_px_x = mpp.0;
-        self.jfa_config.meters_per_px_y = mpp.1;
-
-        // resumed() is not async, so we block on the async init here
-        let render_state = pollster::block_on(RenderState::new(
-            window.clone(),
-            &self.gpu_grid_cell_keys,
-            &self.gpu_grid_cell_vals,
-            &self.gpu_grid_stops,
-            self.shader_config,
-            self.jfa_config,
-        ));
-
-        self.window = Some(window);
-        self.render_state = Some(render_state);
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        match event {
-            WindowEvent::CloseRequested => {
-                // unset window stuff, so that the program knows the window was closed rather than just being confused
-                self.render_state = None;
-                self.window = None;
-
-                event_loop.exit(); // and also stop the loop
-            }
-            WindowEvent::Resized(new_size) => {
-                if let Some(state) = &mut self.render_state {
-                    state.resize(new_size);
-                }
-            }
-            WindowEvent::MouseWheel {
-                device_id,
-                delta,
-                phase,
-            } => {
-                // TODO: make helper function to calculate scroll steps so that it can be used elsewhere if needed
-                // TODO: implement pinch zoom
-                if let (Some(state), Some(window), Some(cursor_pos_px)) =
-                    (&mut self.render_state, &self.window, self.cursor_pos_px)
-                {
-                    let scroll_steps: f32 = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y,
-                        MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / -40.0, // TODO: tune magic number
-                    };
-
-                    state.zoom(scroll_steps, cursor_pos_px);
-
-                    // request redraw after zooming
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                // if dragging, pan by delta from previous cursor position
-                if self.dragging {
-                    if let (Some(prev), Some(state)) =
-                        (self.last_drag_pos_px, &mut self.render_state)
-                    {
-                        let dx = position.x as f32 - prev.x as f32;
-                        let dy = position.y as f32 - prev.y as f32;
-                        state.pan(dx, dy);
-
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                    self.last_drag_pos_px = Some(position);
-                }
-
-                self.cursor_pos_px = Some(position);
-            }
-
-            WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left {
-                    match state {
-                        ElementState::Pressed => {
-                            self.dragging = true;
-                            self.last_drag_pos_px = self.cursor_pos_px;
-                        }
-                        ElementState::Released => {
-                            self.dragging = false;
-                            self.last_drag_pos_px = None;
-                        }
-                    }
-                }
-
-                if button == MouseButton::Right && state == ElementState::Pressed {
-                    if let (Some(state), Some(pos)) =
-                        (self.render_state.as_ref(), self.cursor_pos_px)
-                    {
-                        let w = state.config.width as f32;
-                        let h = state.config.height as f32;
-                        if w > 0.0 && h > 0.0 {
-                            // clamp cursor to window
-                            let x = (pos.x as f32).clamp(0.0, w);
-                            let y = (pos.y as f32).clamp(0.0, h);
-
-                            // normalized coords
-                            let u = x / w; // 0..1 left->right
-                            let v = 1.0 - (y / h); // 0..1 bottom->top
-
-                            // bbox -> world
-                            let min_lon = state.shader_config.bbox_min_lon;
-                            let max_lon = state.shader_config.bbox_max_lon;
-                            let min_lat = state.shader_config.bbox_min_lat;
-                            let max_lat = state.shader_config.bbox_max_lat;
-
-                            let lon = min_lon + u * (max_lon - min_lon);
-                            let lat = max_lat - v * (max_lat - min_lat);
-
-                            println!("clicked lat/lon: {:.6}, {:.6}", lat, lon);
-                        }
-                    }
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                if let Some(state) = &mut self.render_state {
-                    match state.render() {
-                        Ok(()) => {}
-                        // Reconfigure if the surface is lost
-                        Err(wgpu::SurfaceError::Lost) => {
-                            if let Some(state) = &mut self.render_state {
-                                let size = winit::dpi::PhysicalSize::new(
-                                    state.config.width,
-                                    state.config.height,
-                                );
-                                state.resize(size);
-                            }
-                        }
-                        Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                        Err(e) => eprintln!("Render error: {e:?}"),
-                    }
-                }
-
-                // TODO: figure out when to redraw window and how to make it do that just when it needs to (if thats not what it's already doing)
-                // Request another frame immediately for continuous rendering
-                // if let Some(window) = &self.window {
-                //     window.request_redraw();
-                // }
-            }
-            _ => {}
-        }
-    }
-}
-
 // TODO: switch to giving shader some kinda spatial grid rather than having it iterate through all stops for every pixel
 // TODO: switch to a multi-stage aproach that first calculates the arrival time to each pixel, then turns that into a heatmap
 /// stop_positions: (latitude, longitude)
@@ -1576,7 +1278,7 @@ pub async fn run(
     event_loop.run_app(&mut app).unwrap();
 }
 
-fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGridCellVal>) {
+pub fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGridCellVal>) {
     // TODO: what's the times 2 for?
     let cap = (cells.len() * 2).next_power_of_two(); // calculate power of 2 size for hash map (to make gpu happy)
     let empty = GpuGridCellKey {
@@ -1612,24 +1314,4 @@ fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGridCel
     }
 
     return (keys, vals);
-}
-
-/// hash function for gpu compatibility (used to compute hashes for a hashmap that can be used within shaders)
-fn hash2_i32(a: i32, b: i32) -> u32 {
-    let mut x = a as u32;
-    let mut y = b as u32;
-
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x7feb352d);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x846ca68b);
-    x ^= x >> 16;
-
-    y ^= y >> 16;
-    y = y.wrapping_mul(0x7feb352d);
-    y ^= y >> 15;
-    y = y.wrapping_mul(0x846ca68b);
-    y ^= y >> 16;
-
-    x ^ y.rotate_left(16)
 }

@@ -9,6 +9,7 @@ use crate::dijkstra::initialize_dijkstra;
 use crate::parse::initialize_data;
 use crate::structs::{Date, DepartInstant, GTFSData, Position};
 
+mod app;
 mod dijkstra;
 mod parse;
 mod shader;
