@@ -29,20 +29,23 @@ struct ShaderConfig {
 }
 
 struct JFAConfig {
-    jfa_width: f32,  // how many pixels wide the image is
-    jfa_height: f32, // how many pixels high the image is
-    jump_size: f32,  // jump size for JFA
+    jfa_width: f32,       // how many pixels wide the image is
+    jfa_height: f32,      // how many pixels high the image is
+    jump_size: f32,       // jump size for JFA
+    meters_per_px_x: f32, // approximate number of meters per x pixel
+    meters_per_px_y: f32, // approximate number of meters per y pixel
 }
 
 /// [lat, lon, arrival_time, None]
 @group(0) @binding(0) var<storage, read> grid_stops: array<vec4<f32>>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 @group(0) @binding(2) var out_texture: texture_storage_2d<r32uint, write>;
+@group(0) @binding(3) var<uniform> jfa_config: JFAConfig;
 
-fn pack_xy_u16(x: u32, y: u32) -> u32 {
-    // low 16 bits = x, high 16 bits = y
-    return (x & 0xffffu) | ((y & 0xffffu) << 16u);
-}
+// fn pack_xy_u16(x: u32, y: u32) -> u32 {
+//     // low 16 bits = x, high 16 bits = y
+//     return (x & 0xffffu) | ((y & 0xffffu) << 16u);
+// }
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -62,14 +65,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if 0 > stop_uv.x || stop_uv.x > 1 || 0 > stop_uv.y || stop_uv.y > 1 { return; }
 
     // stop poitions (float pixel coordinates)
-    let stop_x = u32(stop_uv.y * (config.width / 2));
-    let stop_y = u32((1.0 - stop_uv.x) * (config.height / 2));
+    let stop_x = u32(stop_uv.y * jfa_config.jfa_width);
+    let stop_y = u32((1.0 - stop_uv.x) * jfa_config.jfa_height);
 
     // Note: if dimensions ever exceed 65535, packing breaks
     if stop_x > 65535u || stop_y > 65535u { return; }
 
     // let packed: vec4<u32> = vec4<u32>(pack_xy_u16(stop_x, stop_y), 0u, 0u, 0u);
-    let packed: vec4<u32> = vec4<u32>(pack_xy_u16(stop_x, stop_y), 0u, 0u, 0u);
+    let packed: vec4<u32> = vec4<u32>(u32(stop.z), 0u, 0u, 0u);
 
     for (var dx = -1; dx <= 1; dx++) {
         for (var dy = -1; dy <= 1; dy++) {
@@ -77,7 +80,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let py: i32 = i32(stop_y) + dy;
 
             // bounds guard
-            if px < 0 || py < 0 || px >= i32(config.width) || py >= i32(config.height) {
+            if px < 0 || py < 0 || px >= i32(jfa_config.jfa_width) || py >= i32(jfa_config.jfa_height) {
                 continue;
             }
 

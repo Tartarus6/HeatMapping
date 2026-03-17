@@ -18,9 +18,11 @@ struct ShaderConfig {
 }
 
 struct JFAConfig {
-    jfa_width: f32,  // how many pixels wide the image is
-    jfa_height: f32, // how many pixels high the image is
-    jump_size: f32,  // jump size for JFA
+    jfa_width: f32,       // how many pixels wide the image is
+    jfa_height: f32,      // how many pixels high the image is
+    jump_size: f32,       // jump size for JFA
+    meters_per_px_x: f32, // approximate number of meters per x pixel
+    meters_per_px_y: f32, // approximate number of meters per y pixel
 }
 
 @vertex
@@ -48,9 +50,9 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
 @group(0) @binding(0) var jfa_tex: texture_2d<u32>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 
-fn unpack_xy(packed: u32) -> vec2<u32> {
-    return vec2(packed & 0xffffu, (packed >> 16u) & 0xffffu);
-}
+// fn unpack_xy(packed: u32) -> vec2<u32> {
+//     return vec2(packed & 0xffffu, (packed >> 16u) & 0xffffu);
+// }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
@@ -64,10 +66,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
 
     let packed: u32 = textureLoad(jfa_tex, vec2i(xy), 0).x;
 
-    let unpacked: vec2u = unpack_xy(packed);
+    // let unpacked: vec2u = unpack_xy(packed);
 
-    // let uniform_arrival_time = (c.z - config.begin_time) / (config.max_time - config.begin_time);
+    let uniform_arrival_time: f32 = (f32(packed) - config.begin_time) / (config.max_time - config.begin_time);
 
+    return vec4f(uniform_arrival_time, uniform_arrival_time, uniform_arrival_time, 1.0);
     // return vec4f(c.rg / vec2(config.width, config.height), c.b, 1.0);
-    return vec4f(2 * f32(unpacked.x) / config.width, 0.0, 2 * f32(unpacked.y) / config.height, 1.0);
+    // return vec4f(2 * f32(unpacked.x) / config.width, 0.0, 2 * f32(unpacked.y) / config.height, 1.0);
 }

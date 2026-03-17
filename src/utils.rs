@@ -23,6 +23,26 @@ pub fn haversine_distance(position_a: Position, position_b: Position) -> f64 {
     return EARTH_RADIUS_METER * c;
 }
 
+/// approximates the size of one pixel based on texture size and bounding box
+pub fn meters_per_pixel(
+    bbox_min_position: Position,
+    bbox_max_position: Position,
+    width: u32,
+    height: u32,
+) -> (f32, f32) {
+    let dlat = bbox_max_position.lat - bbox_min_position.lat;
+    let dlon = bbox_max_position.lon - bbox_min_position.lon;
+    let lat_center = 0.5 * (bbox_min_position.lat + bbox_max_position.lat);
+
+    // meters per pixel vertically
+    let mpp_y = EARTH_RADIUS_METER * dlat / height as f64;
+
+    // meters per pixel horizontally (scaled by cos(latitude))
+    let mpp_x = EARTH_RADIUS_METER * lat_center.cos() * dlon / width as f64;
+
+    (mpp_x.abs() as f32, mpp_y.abs() as f32)
+}
+
 /// turns time in hh:mm:ss format into number of seconds since midnight
 pub fn str_time_to_seconds(time_str: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = time_str.split(":").collect();
