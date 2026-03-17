@@ -63,8 +63,6 @@ pub fn initialize_dijkstra(
         // explore all trip connections of the current stop
         // default to empty array if no connections
         for connection in culled_connections.get(&current_stop_id).unwrap_or(&vec![]) {
-            // TODO: if this connection is not in service, skip it
-
             // TODO: switch to using binary search instead of iterating through until it's found
 
             // if departure_time already passed, skip it
