@@ -5,21 +5,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    DEPART_INSTANT, GTFSData, GpuGridCell, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, Position,
-    WALKING_SPEED,
+    GTFSData, GpuGridCell, JFA_SCALE, Position,
     app::App,
     structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
-    utils::{bbox_from_center, hash2_i32, meters_per_pixel},
+    utils::{hash2_i32, meters_per_pixel},
 };
 
 use tracing::{info_span, instrument};
 use wgpu::{BufferUsages, util::DeviceExt};
-use winit::{
-    application::ApplicationHandler,
-    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
-    window::{Window, WindowId},
-};
+use winit::{event_loop::EventLoop, window::Window};
 
 const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 

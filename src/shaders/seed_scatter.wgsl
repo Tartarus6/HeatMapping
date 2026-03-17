@@ -65,6 +65,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let packed: vec4<u32> = vec4<u32>(u32(stop.z), 0u, 0u, 0u);
 
+    // write to a 3x3 of pixels
+    // this effectively makes the JFA into a variant sometimes called 1+JFA, where a step size of 1 is done, then steps proceed as normal
     for (var dx = -1; dx <= 1; dx++) {
         for (var dy = -1; dy <= 1; dy++) {
             let px: i32 = i32(stop_x) + dx;
