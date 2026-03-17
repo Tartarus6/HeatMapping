@@ -170,6 +170,7 @@ impl RenderState {
             jumps.push(j as f32);
             j /= 2;
         }
+        // jumps.push(1.0); // add an extra jump of distance 1 in order to improve output stability
 
         let jfa_jump_values_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("JFA Jump Values Buffer"),
@@ -340,6 +341,17 @@ impl RenderState {
                         },
                         count: None,
                     },
+                    // grid_stops @binding(4)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
 
@@ -373,9 +385,20 @@ impl RenderState {
                     // jfa_config @binding(2)
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // grid_stops @binding(3)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
                             min_binding_size: None,
                         },
@@ -474,6 +497,10 @@ impl RenderState {
                     binding: 3,
                     resource: jfa_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -498,6 +525,10 @@ impl RenderState {
                     binding: 3,
                     resource: jfa_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -517,6 +548,10 @@ impl RenderState {
                     binding: 2,
                     resource: jfa_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -535,6 +570,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -964,6 +1003,10 @@ impl RenderState {
                     binding: 3,
                     resource: self.jfa_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -988,6 +1031,10 @@ impl RenderState {
                     binding: 3,
                     resource: self.jfa_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -1008,6 +1055,10 @@ impl RenderState {
                     binding: 2,
                     resource: self.jfa_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -1026,6 +1077,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
                 },
             ],
         });

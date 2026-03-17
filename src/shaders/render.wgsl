@@ -49,6 +49,13 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
 
 @group(0) @binding(0) var jfa_tex: texture_2d<u32>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
+@group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
+@group(0) @binding(3) var<storage, read> grid_stops: array<vec4<f32>>;
+
+/// color (in oklch) of the earliest arrival_times
+const COLOR_FAST = vec3f(0.9333, 0.2068, 105.88); // yellow
+/// color (in oklch) of the latest arrival_times
+const COLOR_SLOW = vec3f(0.44, 0.2068, 355.76); // purple
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
@@ -60,8 +67,38 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // map uv in [0,1] to [0, dims-1]
     let xy: vec2u = min(vec2u(uv * vec2f(dims)), dims - vec2u(1u));
 
-    // get the arrival time of pixel (just x component since texture is r32uint)
-    let arrival_time: u32 = textureLoad(jfa_tex, vec2i(xy), 0).x;
+    // get the best stop index from the pixel (just x component since texture is r32uint)
+    var best_stop_index: u32 = textureLoad(jfa_tex, vec2i(xy), 0).x; // offset included
+
+    var arrival_time: u32;
+
+    // if candudate "candidate_stop_index" is zero, that means it's invalid (because pixel value is always stored with a +1 offset when it's valid, so a valid pixel can't be zero)
+    if best_stop_index == 0 {
+        // set arrival_time for pixel to max_time so that it blends nicely with the end of the gradient
+        arrival_time = u32(config.max_time);
+    } else {
+        best_stop_index -= 1; // remove offset
+
+        let best_stop = grid_stops[best_stop_index];
+
+        // normalize candidate stop position vec2f([0,1], [0,1])
+        let u: f32 = (best_stop.y - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
+        let v: f32 = 1.0 - (best_stop.x - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
+        let best_stop_norm: vec2f = vec2f(u, v);
+
+        // get candidate stop pixel vec2i(x, y)
+        let best_stop_pixel: vec2i = vec2i(best_stop_norm * vec2f(jfa_config.jfa_width, jfa_config.jfa_height));
+
+        // TODO: could precompute sqrt(2) and use that as a factor when diagonal, or just use the x or y if orthogonal (to prevent need to use length())
+        // approx. distance in meters between this point and candidate point
+        let dist: f32 = length(vec2f(best_stop_pixel - vec2i(xy)) * vec2f(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y));
+
+        // walk time in seconds between this pixel and candidate pixel
+        let walk_s = u32(dist * config.inverse_walk_speed_mps);
+
+        // arrival time if walking from candidate pixel to current pixel
+        arrival_time = u32(best_stop.z) + walk_s;
+    }
 
     // convert arrival time into [0,1] based on max_time
     let uniform_arrival_time: f32 = (f32(arrival_time) - config.begin_time) / (config.max_time - config.begin_time);
@@ -72,27 +109,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
 
 /// gets color on gradient based on scale [0,1]
 fn gradient_get_color(scale: f32) -> vec4<f32> {
-    let red = vec3(0.55, 0.2, 0.15);  //fastest
-    let orange = vec3(0.65, 0.1, 0.5);
-    let yellow = vec3(0.85, 0.00, 0.18);
-    let green = vec3(0.72, -0.18, 0.08);
-    let blue = vec3(0.55, -0.05, -0.2);
-    let purple = vec3(0.4, 0.15, -0.2);   //slowest
+    let oklch = mix(COLOR_FAST, COLOR_SLOW, scale);
 
-    var oklab: vec3<f32>;
-    if scale < 0.20 {
-        oklab = mix(red, orange, scale * 5);
-    } else if scale < 0.40 {
-        oklab = mix(orange, yellow, (scale - 0.20) * 5);
-    } else if scale < 0.60 {
-        oklab = mix(yellow, green, (scale - 0.40) * 5);
-    } else if scale < 0.80 {
-        oklab = mix(green, blue, (scale - 0.60) * 5);
-    } else {
-        oklab = mix(blue, purple, (scale - 0.80) * 5);
-    }
+    return vec4(oklch_to_rgb(oklch), 1.0);
+}
 
-    return vec4(oklab_to_rgb(oklab), 1.0);
+fn oklch_to_rgb(oklch: vec3<f32>) -> vec3<f32> {
+    let l: f32 = oklch.x;
+    let c: f32 = oklch.y;
+    let h_deg: f32 = oklch.z;
+
+    // degrees -> radians
+    let h_rad: f32 = h_deg * 0.017453292519943295; // PI / 180
+
+    // OKLCH -> OKLab
+    let a: f32 = c * cos(h_rad);
+    let b: f32 = c * sin(h_rad);
+
+    return oklab_to_rgb(vec3<f32>(l, a, b));
 }
 
 fn oklab_to_rgb(oklab: vec3<f32>) -> vec3<f32> {
@@ -103,15 +137,6 @@ fn oklab_to_rgb(oklab: vec3<f32>) -> vec3<f32> {
     var r = l * 4.0767416621 + m * -3.3077115913 + s * 0.2309699292;
     var g = l * -1.2684380046 + m * 2.6097574011 + s * -0.3413193965;
     var b = l * -0.0041960863 + m * -0.7034186147 + s * 1.7076147010;
-    r = linear_to_gamma(r); g = linear_to_gamma(g); b = linear_to_gamma(b);
-    r = clamp(r, 0.0, 1.0); g = clamp(g, 0.0, 1.0); b = clamp(b, 0, 1.0);
+    r = clamp(r, 0.0, 1.0); g = clamp(g, 0.0, 1.0); b = clamp(b, 0.0, 1.0);
     return vec3(r, g, b);
-}
-
-fn linear_to_gamma(c: f32) -> f32 {
-    if c >= 0.0031308 {
-        return 1.055 * pow(c, 0.41666666666) - 0.055;
-    } else {
-        return 12.92 * c;
-    }
 }

@@ -63,7 +63,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let stop_x = u32(stop_uv.y * jfa_config.jfa_width);
     let stop_y = u32((1.0 - stop_uv.x) * jfa_config.jfa_height);
 
-    let packed: vec4<u32> = vec4<u32>(u32(stop.z), 0u, 0u, 0u);
+    // store stop index in texture
+    let packed: vec4<u32> = vec4<u32>(i + 1, 0u, 0u, 0u); // offset added to differentiate index 0 from a cleared pixel
 
     // write to a 3x3 of pixels
     // this effectively makes the JFA into a variant sometimes called 1+JFA, where a step size of 1 is done, then steps proceed as normal

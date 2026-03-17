@@ -30,7 +30,7 @@ const INITIAL_HALF_LAT_SPAN: f64 = 0.03;
 // TODO: switch to automatically setting and updating jfa scale based on window dimensions (or maybe measure performance and increase if too slow)
 /// integer scale of jfa render
 /// 2 would mean jfa width and height are half of output
-const JFA_SCALE: u32 = 2;
+const JFA_SCALE: u32 = 4;
 
 /// constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
