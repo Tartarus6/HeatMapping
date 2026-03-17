@@ -4,7 +4,10 @@ use std::cmp::max;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, JFA_SCALE, MAX_DIM, Position, WALKING_SPEED};
+use crate::{
+    DEPART_INSTANT, GTFSData, GpuGridCell, JFA_SCALE, MAX_DIM, Position, WALKING_SPEED,
+    utils::meters_per_pixel,
+};
 
 use tracing::{info_span, instrument};
 use wgpu::{BufferUsages, util::DeviceExt};
@@ -52,9 +55,11 @@ struct ShaderConfig {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct JFAConfig {
-    jfa_width: f32,  // how many pixels wide the image is
-    jfa_height: f32, // how many pixels high the image is
-    jump_size: f32,  // jump size for JFA
+    jfa_width: f32,       // how many pixels wide the image is
+    jfa_height: f32,      // how many pixels high the image is
+    jump_size: f32,       // jump size for JFA
+    meters_per_px_x: f32, // approximate number of meters per x pixel
+    meters_per_px_y: f32, // approximate number of meters per y pixel
 }
 
 // Holds all the wgpu state needed to render
@@ -727,6 +732,25 @@ impl RenderState {
         self.shader_config.bbox_max_lat = new_max_lat;
 
         self.upload_shader_config();
+
+        // jfa config update
+        let meters_per_pixel = meters_per_pixel(
+            Position {
+                lat: self.shader_config.bbox_min_lat as f64,
+                lon: self.shader_config.bbox_min_lon as f64,
+            },
+            Position {
+                lat: self.shader_config.bbox_max_lat as f64,
+                lon: self.shader_config.bbox_max_lon as f64,
+            },
+            self.jfa_config.jfa_width as u32,
+            self.jfa_config.jfa_height as u32,
+        );
+
+        self.jfa_config.meters_per_px_x = meters_per_pixel.0;
+        self.jfa_config.meters_per_px_y = meters_per_pixel.1;
+
+        self.upload_jfa_config();
     }
 
     fn pan(&mut self, dx_px: f32, dy_px: f32) {
@@ -783,6 +807,23 @@ impl RenderState {
             // update jfa_config
             self.jfa_config.jfa_width = max(1, new_size.width / JFA_SCALE) as f32;
             self.jfa_config.jfa_height = max(1, new_size.height / JFA_SCALE) as f32;
+
+            let meters_per_pixel = meters_per_pixel(
+                Position {
+                    lat: self.shader_config.bbox_min_lat as f64,
+                    lon: self.shader_config.bbox_min_lon as f64,
+                },
+                Position {
+                    lat: self.shader_config.bbox_max_lat as f64,
+                    lon: self.shader_config.bbox_max_lon as f64,
+                },
+                max(1, new_size.width / JFA_SCALE),
+                max(1, new_size.height / JFA_SCALE),
+            );
+
+            self.jfa_config.meters_per_px_x = meters_per_pixel.0;
+            self.jfa_config.meters_per_px_y = meters_per_pixel.1;
+
             self.upload_jfa_config();
 
             self.recreate_jfa_textures_and_bind_groups();
@@ -1005,8 +1046,9 @@ impl RenderState {
                     let wg_size_x = 16u32;
                     let wg_size_y = 16u32;
 
-                    let dispatch_x = (self.config.width + wg_size_x - 1) / wg_size_x;
-                    let dispatch_y = (self.config.height + wg_size_y - 1) / wg_size_y;
+                    let dispatch_x = (self.jfa_config.jfa_width as u32 + wg_size_x - 1) / wg_size_x;
+                    let dispatch_y =
+                        (self.jfa_config.jfa_height as u32 + wg_size_y - 1) / wg_size_y;
 
                     jfa_step_compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
 
@@ -1172,10 +1214,18 @@ impl App {
             inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
         };
 
+        let jfa_width = max(1, pixels_width / 2);
+        let jfa_height = max(1, pixels_height / 2);
+
+        let meters_per_pixel =
+            meters_per_pixel(bbox_min_position, bbox_max_position, jfa_width, jfa_height);
+
         let jfa_config = JFAConfig {
             jfa_width: max(1, pixels_width / 2) as f32,
             jfa_height: max(1, pixels_height / 2) as f32,
             jump_size: 0.0,
+            meters_per_px_x: meters_per_pixel.0,
+            meters_per_px_y: meters_per_pixel.1,
         };
 
         let (gpu_grid_cell_keys, gpu_grid_cell_vals) = build_gpu_hash(&gpu_grid_cells);
