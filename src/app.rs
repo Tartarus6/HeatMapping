@@ -51,7 +51,6 @@ impl App {
         //     ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
         // };
 
-        // TODO: replace max_time with actual processing stage to calculate it
         let begin_time = DEPART_INSTANT.time;
 
         let shader_config = ShaderConfig {
