@@ -63,3 +63,32 @@ pub fn seconds_to_str_time(time: &u32) -> String {
     let seconds = time % 60;
     return format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
 }
+
+/// Build a bbox from center + zoom + viewport size, preserving physical aspect:
+/// physical_width ~= lon_span * cos(lat), physical_height ~= lat_span
+pub fn bbox_from_center(
+    center: Position,
+    half_lat_span: f64,
+    width_px: u32,
+    height_px: u32,
+) -> (Position, Position) {
+    let w = width_px.max(1) as f64;
+    let h = height_px.max(1) as f64;
+    let aspect = w / h;
+
+    let cos_lat = center.lat.cos().abs().max(1e-6);
+
+    let lat_span = 2.0 * half_lat_span;
+    let lon_span = lat_span * aspect / cos_lat;
+
+    let min = Position {
+        lat: center.lat - 0.5 * lat_span,
+        lon: center.lon - 0.5 * lon_span,
+    };
+    let max = Position {
+        lat: center.lat + 0.5 * lat_span,
+        lon: center.lon + 0.5 * lon_span,
+    };
+
+    (min, max)
+}

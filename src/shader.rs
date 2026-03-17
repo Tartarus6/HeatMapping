@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    DEPART_INSTANT, GTFSData, GpuGridCell, JFA_SCALE, MAX_DIM, Position, WALKING_SPEED,
-    utils::meters_per_pixel,
+    DEPART_INSTANT, GTFSData, GpuGridCell, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, Position,
+    WALKING_SPEED,
+    utils::{bbox_from_center, meters_per_pixel},
 };
 
 use tracing::{info_span, instrument};
@@ -1182,50 +1183,48 @@ impl App {
         arrival_times: &HashMap<u32, u32>,
         gpu_grid_cells: Vec<GpuGridCell>,
         gpu_grid_stops: Vec<[f32; 4]>,
-        bbox_min_position: Position,
-        bbox_max_position: Position,
     ) -> Self {
         // derive image dimensions from the bounding box aspect ratio
         // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
-        let mid_lat = (bbox_min_position.lat + bbox_max_position.lat) / 2.0;
-        let physical_width = (bbox_max_position.lon - bbox_min_position.lon) * mid_lat.cos();
-        let physical_height = bbox_max_position.lat - bbox_min_position.lat;
-        let aspect_ratio = physical_width / physical_height;
-        let (pixels_width, pixels_height) = if aspect_ratio >= 1.0 {
-            (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
-        } else {
-            ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
-        };
+        // let mid_lat = (bbox_min_position.lat + bbox_max_position.lat) / 2.0;
+        // let physical_width = (bbox_max_position.lon - bbox_min_position.lon) * mid_lat.cos();
+        // let physical_height = bbox_max_position.lat - bbox_min_position.lat;
+        // let aspect_ratio = physical_width / physical_height;
+        // let (pixels_width, pixels_height) = if aspect_ratio >= 1.0 {
+        //     (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
+        // } else {
+        //     ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
+        // };
 
         // TODO: replace max_time with actual processing stage to calculate it
         let begin_time = DEPART_INSTANT.time;
         let max_time = DEPART_INSTANT.time + 36000; // shitty hack to make it display SOMETHING
 
         let shader_config = ShaderConfig {
-            width: pixels_width as f32,
-            height: pixels_height as f32,
-            bbox_min_lat: bbox_min_position.lat as f32,
-            bbox_min_lon: bbox_min_position.lon as f32,
-            bbox_max_lat: bbox_max_position.lat as f32,
-            bbox_max_lon: bbox_max_position.lon as f32,
+            width: MAX_DIM as f32,  // dummy init value (will be overwritten)
+            height: MAX_DIM as f32, // dummy init value (will be overwritten)
+            bbox_min_lat: 0.0,      // dummy init value (will be overwritten)
+            bbox_min_lon: 1.0,      // dummy init value (will be overwritten)
+            bbox_max_lat: 0.0,      // dummy init value (will be overwritten)
+            bbox_max_lon: 1.0,      // dummy init value (will be overwritten)
             gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
             begin_time: begin_time as f32,
             max_time: max_time as f32,
             inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
         };
 
-        let jfa_width = max(1, pixels_width / 2);
-        let jfa_height = max(1, pixels_height / 2);
+        // let jfa_width = max(1, pixels_width / JFA_SCALE);
+        // let jfa_height = max(1, pixels_height / JFA_SCALE);
 
-        let meters_per_pixel =
-            meters_per_pixel(bbox_min_position, bbox_max_position, jfa_width, jfa_height);
+        // let meters_per_pixel =
+        //     meters_per_pixel(bbox_min_position, bbox_max_position, jfa_width, jfa_height);
 
         let jfa_config = JFAConfig {
-            jfa_width: max(1, pixels_width / 2) as f32,
-            jfa_height: max(1, pixels_height / 2) as f32,
-            jump_size: 0.0,
-            meters_per_px_x: meters_per_pixel.0,
-            meters_per_px_y: meters_per_pixel.1,
+            jfa_width: 0.0,       // dummy init value (will be overwritten)
+            jfa_height: 0.0,      // dummy init value (will be overwritten)
+            jump_size: 0.0,       // dummy init value (will be overwritten)
+            meters_per_px_x: 0.0, // dummy init value (will be overwritten)
+            meters_per_px_y: 0.0, // dummy init value (will be overwritten)
         };
 
         let (gpu_grid_cell_keys, gpu_grid_cell_vals) = build_gpu_hash(&gpu_grid_cells);
@@ -1249,16 +1248,31 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title("HeatMapping")
-                        .with_inner_size(winit::dpi::LogicalSize::new(
-                            self.shader_config.width,
-                            self.shader_config.height,
-                        )),
-                )
+                .create_window(Window::default_attributes().with_title("HeatMapping"))
                 .unwrap(),
         );
+
+        let size = window.inner_size();
+        let center = DEPART_INSTANT.position;
+        let (bbox_min, bbox_max) =
+            bbox_from_center(center, INITIAL_HALF_LAT_SPAN, size.width, size.height);
+
+        // update configs to match real startup window
+        self.shader_config.width = size.width as f32;
+        self.shader_config.height = size.height as f32;
+        self.shader_config.bbox_min_lat = bbox_min.lat as f32;
+        self.shader_config.bbox_min_lon = bbox_min.lon as f32;
+        self.shader_config.bbox_max_lat = bbox_max.lat as f32;
+        self.shader_config.bbox_max_lon = bbox_max.lon as f32;
+
+        let jfa_w = max(1, size.width / JFA_SCALE);
+        let jfa_h = max(1, size.height / JFA_SCALE);
+        self.jfa_config.jfa_width = jfa_w as f32;
+        self.jfa_config.jfa_height = jfa_h as f32;
+
+        let mpp = meters_per_pixel(bbox_min, bbox_max, jfa_w, jfa_h);
+        self.jfa_config.meters_per_px_x = mpp.0;
+        self.jfa_config.meters_per_px_y = mpp.1;
 
         // resumed() is not async, so we block on the async init here
         let render_state = pollster::block_on(RenderState::new(
@@ -1415,19 +1429,10 @@ pub async fn run(
     arrival_times: &HashMap<u32, u32>,
     gpu_grid_cells: Vec<GpuGridCell>,
     gpu_grid_stops: Vec<[f32; 4]>,
-    bbox_min_position: Position,
-    bbox_max_position: Position,
 ) {
     let event_loop = EventLoop::new().unwrap();
 
-    let mut app = App::new(
-        gtfs_data,
-        arrival_times,
-        gpu_grid_cells,
-        gpu_grid_stops,
-        bbox_min_position,
-        bbox_max_position,
-    );
+    let mut app = App::new(gtfs_data, arrival_times, gpu_grid_cells, gpu_grid_stops);
 
     event_loop.run_app(&mut app).unwrap();
 }

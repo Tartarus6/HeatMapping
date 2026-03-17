@@ -22,19 +22,14 @@ const WALKING_SPEED: f64 = 5.0;
 /// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
 const MAX_WALK_TRANSFER_DISTANCE: f64 = 20000.0;
 
-const JFA_SCALE: u32 = 4; // integer scale of jfa render (2 would mean jfa width and height are half of output)
+/// initial zoom control (half of latitude span in radians)
+/// bigger value means zoomed further out.
+const INITIAL_HALF_LAT_SPAN: f64 = 0.03;
 
-// TODO: remove bounding box consts, since it's all handled in render.rs anyways (could instead have either const starting center point, or compute the average of all stops maybe)
-/// bounding box for the heatmap output (Amsterdam-ish area)
-const BBOX_MIN: Position = Position {
-    lat: 0.87,
-    lon: 0.04,
-};
-/// bounding box for the heatmap output (Amsterdam-ish area)
-const BBOX_MAX: Position = Position {
-    lat: 0.94,
-    lon: 0.16,
-};
+// TODO: switch to automatically setting and updating jfa scale based on window dimensions (or maybe measure performance and increase if too slow)
+/// integer scale of jfa render
+/// 2 would mean jfa width and height are half of output
+const JFA_SCALE: u32 = 2;
 
 /// constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
@@ -112,15 +107,7 @@ fn main() {
 
     // Shader
     let now = Instant::now();
-    shader::run(
-        &gtfs_data,
-        &arrival_times,
-        gpu_grid_cells,
-        gpu_grid_stops,
-        BBOX_MIN,
-        BBOX_MAX,
-    )
-    .block_on();
+    shader::run(&gtfs_data, &arrival_times, gpu_grid_cells, gpu_grid_stops).block_on();
     println!("Heatmap: {}ms\n", now.elapsed().as_millis());
 }
 
