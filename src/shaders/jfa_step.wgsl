@@ -25,19 +25,11 @@ struct JFAConfig {
 @group(0) @binding(2) var<uniform> config: ShaderConfig;
 @group(0) @binding(3) var<uniform> jfa_config: JFAConfig;
 
-// fn unpack_xy(packed: u32) -> vec2<u32> {
-//     return vec2(packed & 0xffffu, (packed >> 16u) & 0xffffu);
-// }
-
-// fn pack_xy_u16(x: u32, y: u32) -> u32 {
-//     // low 16 bits = x, high 16 bits = y
-//     return (x & 0xffffu) | ((y & 0xffffu) << 16u);
-// }
-
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= u32(jfa_config.jfa_width) || gid.y >= u32(jfa_config.jfa_height) { return; }
 
+    // the position of current pixel
     let point = vec2<i32>(i32(gid.x), i32(gid.y));
 
     // current best (from prev_texture)
@@ -47,32 +39,37 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // check 8 neighbors at distance jump
     for (var dx = -1; dx <= 1; dx++) {
         for (var dy = -1; dy <= 1; dy++) {
-            let neighbor_point = point + vec2<i32>(dx * i32(jfa_config.jump_size), dy * i32(jfa_config.jump_size));
+            let delta_px = vec2<i32>(dx * i32(jfa_config.jump_size), dy * i32(jfa_config.jump_size));
+            let neighbor_point = point + delta_px;
 
             // skip if neighbor not in bounds
             if !(in_bounds(neighbor_point)) {
                 continue;
             }
 
-            let candidate: u32 = load_seed(neighbor_point);
-            if candidate == 0 { // if candudate "arrival_time" is zero, it's probably invalid (just an uninitialized pixel)
+            // get neighbor point arrival time as new candidate to get to current point
+            let candidate_arrival_time: u32 = load_seed(neighbor_point);
+            if candidate_arrival_time == 0 { // if candudate "arrival_time" is zero, it's probably invalid (just an uninitialized pixel)
                 continue;
             }
 
-            // let delta = vec2<i32>(candidate.xy) - point;
-            let delta: vec2f = vec2f(f32(dx) * jfa_config.jump_size, f32(dy) * jfa_config.jump_size) * vec2f(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y);
+            // approx. distance in meters between this point and candidate point
+            let dist: f32 = length(vec2f(delta_px) * vec2f(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y));
 
-            let dist: f32 = length(delta);
-
+            // walk time in seconds between this pixel and candidate pixel
             let walk_s = u32(dist * config.inverse_walk_speed_mps);
-            let total: u32 = candidate + walk_s;
 
+            // arrival time if walking from candidate pixel to current pixel
+            let total: u32 = candidate_arrival_time + walk_s;
+
+            // update best arrival time if new path is better
             if total < best {
                 best = total;
             }
         }
     }
 
+    // update pixel with new best arrival time
     textureStore(next_texture, point, vec4(best, 0u, 0u, 0u));
 }
 
@@ -81,10 +78,8 @@ fn in_bounds(point: vec2<i32>) -> bool {
            0 <= point.y && point.y < i32(jfa_config.jfa_height);
 }
 
-// TODO: change this to vec4 maybe?
-// returns (x, y, validity, None) (1=valid, 0=invalid)
+// returns arrival time of pixel at given (x, y) screen-coordinate point
 fn load_seed(point: vec2<i32>) -> u32 {
     let v = textureLoad(prev_texture, point);
-    // let xy = unpack_xy(v.x);
     return v.x;
 }

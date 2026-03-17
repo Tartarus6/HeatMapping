@@ -64,8 +64,7 @@ pub fn seconds_to_str_time(time: &u32) -> String {
     return format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
 }
 
-/// Build a bbox from center + zoom + viewport size, preserving physical aspect:
-/// physical_width ~= lon_span * cos(lat), physical_height ~= lat_span
+/// get bbox from center (lat, lon) position and given zoom level that fits the aspect ratio of the given width and height
 pub fn bbox_from_center(
     center: Position,
     half_lat_span: f64,

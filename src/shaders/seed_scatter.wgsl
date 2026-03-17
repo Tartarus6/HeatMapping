@@ -42,11 +42,6 @@ struct JFAConfig {
 @group(0) @binding(2) var out_texture: texture_storage_2d<r32uint, write>;
 @group(0) @binding(3) var<uniform> jfa_config: JFAConfig;
 
-// fn pack_xy_u16(x: u32, y: u32) -> u32 {
-//     // low 16 bits = x, high 16 bits = y
-//     return (x & 0xffffu) | ((y & 0xffffu) << 16u);
-// }
-
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -68,10 +63,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let stop_x = u32(stop_uv.y * jfa_config.jfa_width);
     let stop_y = u32((1.0 - stop_uv.x) * jfa_config.jfa_height);
 
-    // Note: if dimensions ever exceed 65535, packing breaks
-    if stop_x > 65535u || stop_y > 65535u { return; }
-
-    // let packed: vec4<u32> = vec4<u32>(pack_xy_u16(stop_x, stop_y), 0u, 0u, 0u);
     let packed: vec4<u32> = vec4<u32>(u32(stop.z), 0u, 0u, 0u);
 
     for (var dx = -1; dx <= 1; dx++) {

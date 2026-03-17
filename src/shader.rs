@@ -88,6 +88,10 @@ struct RenderState {
     jfa_render_bind_group_b: wgpu::BindGroup,
     jfa_render_bind_group_layout: wgpu::BindGroupLayout,
 
+    stop_points_pipeline: wgpu::RenderPipeline,
+    stop_points_bind_group: wgpu::BindGroup,
+    stop_points_bind_group_layout: wgpu::BindGroupLayout,
+
     shader_config: ShaderConfig,        // CPU-side copy
     shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
 
@@ -219,11 +223,11 @@ impl RenderState {
 
         // TODO: make this less horrible (push constants would be really cool if they exist (they might))
         // Offset of jump_size in JFAConfig (11th f32 field, zero-based index 10)
-        let shader_config_jump_offset_bytes = (2 * std::mem::size_of::<f32>()) as u64;
+        let jfa_config_jump_offset_bytes = (2 * std::mem::size_of::<f32>()) as u64;
 
         // We record 2 timestamps per pass: begin/end.
         // Passes: seed + each jfa step + final render.
-        let timestamp_pass_count = 1 + (jumps.len() as u32) + 1; // seed + steps + render
+        let timestamp_pass_count = 1 + (jumps.len() as u32) + 1 + 1; // seed + steps + render + stop_points
         let timestamp_query_count = timestamp_pass_count * 2;
 
         let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -268,6 +272,7 @@ impl RenderState {
             label: None,
             view_formats: &[],
         };
+
         // Ping/pong textures:
         let jfa_texture_a = device.create_texture(&jfa_texture_desc);
         let jfa_texture_b = device.create_texture(&jfa_texture_desc);
@@ -424,6 +429,46 @@ impl RenderState {
                 ],
             });
 
+        let stop_points_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Stop Points Bind Group Layout"),
+                entries: &[
+                    // grid_stops @binding(0)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // shader_config @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
         // Putting Buffers into Bind Layout
         //
         // The bind group contains the actual resources to bind to the pipeline.
@@ -539,6 +584,25 @@ impl RenderState {
             ],
         });
 
+        let stop_points_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Stop Point Bind Group"),
+            layout: &stop_points_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         // JFA Seed Pipeline
         let jfa_seed_shader =
             device.create_shader_module(wgpu::include_wgsl!("shaders/seed_scatter.wgsl"));
@@ -617,6 +681,43 @@ impl RenderState {
             cache: None,
         });
 
+        // Stop Points Pipeline
+        let stop_points_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/stop_points.wgsl"));
+
+        let stop_points_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Stop Points Pipeline Layout"),
+                bind_group_layouts: &[&stop_points_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let stop_points_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Stop Points Pipeline"),
+            layout: Some(&stop_points_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &stop_points_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &stop_points_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format, // same as swapchain/surface
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             surface,
             device,
@@ -641,6 +742,10 @@ impl RenderState {
             jfa_render_bind_group_b,
             jfa_render_bind_group_layout,
 
+            stop_points_pipeline,
+            stop_points_bind_group,
+            stop_points_bind_group_layout,
+
             shader_config,
             shader_config_buffer,
 
@@ -654,7 +759,7 @@ impl RenderState {
 
             jfa_jump_values_buffer,
             jfa_jump_count: jumps.len() as u32,
-            shader_config_jump_offset_bytes,
+            shader_config_jump_offset_bytes: jfa_config_jump_offset_bytes,
 
             timestamp_query_set,
             timestamp_resolve_buffer,
@@ -1066,7 +1171,7 @@ impl RenderState {
 
             // final_texture_render_bind_group = &self.jfa_render_bind_group_a;
 
-            // Render Pass
+            // Render Pass (turning travel time texture into an actual image with colors)
             {
                 let view = output
                     .texture
@@ -1103,6 +1208,40 @@ impl RenderState {
                 render_pass.set_pipeline(&self.jfa_render_pipeline);
                 render_pass.set_bind_group(0, final_texture_render_bind_group, &[]);
                 render_pass.draw(0..3, 0..1);
+            }
+
+            // Stop points overlay pass (draw points on top of heatmap)
+            {
+                let view = output
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+
+                let mut overlay_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Stop Points Overlay Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load, // keep heatmap already drawn
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
+                        query_set: &self.timestamp_query_set,
+                        beginning_of_pass_write_index: Some(q),
+                        end_of_pass_write_index: Some(q + 1),
+                    }), // or add timestamps if you want
+                    multiview_mask: None,
+                });
+
+                q += 2; // increment q for stop points enter and close
+
+                overlay_pass.set_pipeline(&self.stop_points_pipeline);
+                overlay_pass.set_bind_group(0, &self.stop_points_bind_group, &[]);
+                overlay_pass.draw(0..6, 0..self.num_stops); // 6 verts per stop instance
             }
         }
 
