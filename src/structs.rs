@@ -192,6 +192,8 @@ pub struct Transfer {
 pub struct Connection {
     pub from_stop_id: u32,
     pub to_stop_id: u32,
+    /// id of parent trip
+    pub trip_id: u32,
     /// time when arriving at destination (neighbor) stop (in seconds since midnight)
     pub arrival_time: u32,
     /// time when departing towards (neighbor) stop (in seconds since midnight)
