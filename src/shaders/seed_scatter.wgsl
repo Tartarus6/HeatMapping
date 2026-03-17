@@ -16,7 +16,7 @@ struct GpuGridCellVal {
 
 struct ShaderConfig {
     width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels tall the image is
+    height: f32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
@@ -26,16 +26,18 @@ struct ShaderConfig {
     // TODO: fix max time
     max_time: f32,               // latest arrival time in seconds since midnight
     inverse_walk_speed_mps: f32, // walking speed in seconds per meter
-    jump_size: f32,              // jump size for JFA
+}
+
+struct JFAConfig {
+    jfa_width: f32,  // how many pixels wide the image is
+    jfa_height: f32, // how many pixels high the image is
+    jump_size: f32,  // jump size for JFA
 }
 
 /// [lat, lon, arrival_time, None]
 @group(0) @binding(0) var<storage, read> grid_stops: array<vec4<f32>>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 @group(0) @binding(2) var out_texture: texture_storage_2d<r32uint, write>;
-
-// TODO: use invalid seed
-const INVALID_SEED: u32 = 0xffffffffu;
 
 fn pack_xy_u16(x: u32, y: u32) -> u32 {
     // low 16 bits = x, high 16 bits = y
@@ -60,12 +62,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if 0 > stop_uv.x || stop_uv.x > 1 || 0 > stop_uv.y || stop_uv.y > 1 { return; }
 
     // stop poitions (float pixel coordinates)
-    let stop_x = u32(stop_uv.y * config.width);
-    let stop_y = u32((1.0 - stop_uv.x) * config.height);
+    let stop_x = u32(stop_uv.y * (config.width / 2));
+    let stop_y = u32((1.0 - stop_uv.x) * (config.height / 2));
 
     // Note: if dimensions ever exceed 65535, packing breaks
     if stop_x > 65535u || stop_y > 65535u { return; }
 
+    // let packed: vec4<u32> = vec4<u32>(pack_xy_u16(stop_x, stop_y), 0u, 0u, 0u);
     let packed: vec4<u32> = vec4<u32>(pack_xy_u16(stop_x, stop_y), 0u, 0u, 0u);
 
     for (var dx = -1; dx <= 1; dx++) {

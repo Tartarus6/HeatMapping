@@ -5,7 +5,7 @@ struct VsOut {
 
 struct ShaderConfig {
     width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels tall the image is
+    height: f32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
@@ -15,7 +15,12 @@ struct ShaderConfig {
     // TODO: fix max time
     max_time: f32,               // latest arrival time in seconds since midnight
     inverse_walk_speed_mps: f32, // walking speed in seconds per meter
-    jump_size: f32,              // jump size for JFA
+}
+
+struct JFAConfig {
+    jfa_width: f32,  // how many pixels wide the image is
+    jfa_height: f32, // how many pixels high the image is
+    jump_size: f32,  // jump size for JFA
 }
 
 @vertex
@@ -64,5 +69,5 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // let uniform_arrival_time = (c.z - config.begin_time) / (config.max_time - config.begin_time);
 
     // return vec4f(c.rg / vec2(config.width, config.height), c.b, 1.0);
-    return vec4f(f32(unpacked.x) / config.width, f32(unpacked.y) / config.height, 0.0, 1.0);
+    return vec4f(2 * f32(unpacked.x) / config.width, 0.0, 2 * f32(unpacked.y) / config.height, 1.0);
 }

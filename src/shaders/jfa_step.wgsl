@@ -1,6 +1,6 @@
 struct ShaderConfig {
     width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels tall the image is
+    height: f32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
@@ -10,14 +10,18 @@ struct ShaderConfig {
     // TODO: fix max time
     max_time: f32,               // latest arrival time in seconds since midnight
     inverse_walk_speed_mps: f32, // walking speed in seconds per meter
-    jump_size: f32,              // jump size for JFA
+}
+
+struct JFAConfig {
+    jfa_width: f32,  // how many pixels wide the image is
+    jfa_height: f32, // how many pixels high the image is
+    jump_size: f32,  // jump size for JFA
 }
 
 @group(0) @binding(0) var prev_texture: texture_storage_2d<r32uint, read>;  // read-only
 @group(0) @binding(1) var next_texture: texture_storage_2d<r32uint, write>; // write-only
 @group(0) @binding(2) var<uniform> config: ShaderConfig;
-
-const INVALID_SEED: u32 = 0xffffffffu;
+@group(0) @binding(3) var<uniform> jfa_config: JFAConfig;
 
 fn unpack_xy(packed: u32) -> vec2<u32> {
     return vec2(packed & 0xffffu, (packed >> 16u) & 0xffffu);
@@ -30,7 +34,7 @@ fn pack_xy_u16(x: u32, y: u32) -> u32 {
 
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= u32(config.width) || gid.y >= u32(config.height) { return; }
+    if gid.x >= u32(config.width / 2) || gid.y >= u32(config.height / 2) { return; }
 
     let point = vec2<i32>(i32(gid.x), i32(gid.y));
 
@@ -42,7 +46,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // check 8 neighbors at distance jump
     for (var dx = -1; dx <= 1; dx++) {
         for (var dy = -1; dy <= 1; dy++) {
-            let neighbor_point = point + vec2<i32>(dx * i32(config.jump_size), dy * i32(config.jump_size));
+            let neighbor_point = point + vec2<i32>(dx * i32(jfa_config.jump_size), dy * i32(jfa_config.jump_size));
 
             // skip if neighbor not in bounds
             if !(in_bounds(neighbor_point)) {
@@ -69,8 +73,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 fn in_bounds(point: vec2<i32>) -> bool {
-    return 0 <= point.x && point.x < i32(config.width) &&
-           0 <= point.y && point.y < i32(config.height);
+    return 0 <= point.x && point.x < i32(config.width / 2) &&
+           0 <= point.y && point.y < i32(config.height / 2);
 }
 
 // TODO: change this to vec4 maybe?

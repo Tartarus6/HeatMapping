@@ -22,6 +22,8 @@ const WALKING_SPEED: f64 = 5.0;
 /// maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
 const MAX_WALK_TRANSFER_DISTANCE: f64 = 20000.0;
 
+const JFA_SCALE: u32 = 4; // integer scale of jfa render (2 would mean jfa width and height are half of output)
+
 // TODO: remove bounding box consts, since it's all handled in render.rs anyways (could instead have either const starting center point, or compute the average of all stops maybe)
 /// bounding box for the heatmap output (Amsterdam-ish area)
 const BBOX_MIN: Position = Position {

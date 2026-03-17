@@ -1,12 +1,13 @@
 // This file contains all of the implementations related to shaders and rendering
 
+use std::cmp::max;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, MAX_DIM, Position, WALKING_SPEED};
+use crate::{DEPART_INSTANT, GTFSData, GpuGridCell, JFA_SCALE, MAX_DIM, Position, WALKING_SPEED};
 
 use tracing::{info_span, instrument};
-use wgpu::{BufferUsages, SurfaceTexture, util::DeviceExt};
+use wgpu::{BufferUsages, util::DeviceExt};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
@@ -30,12 +31,12 @@ struct GpuGridCellVal {
     count: u32,
 }
 
-// TODO: switch width, height, begin_time, max_time, and jump_size to be u32
+// TODO: switch width, height, begin_time, and max_time to be u32
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ShaderConfig {
     width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels tall the image is
+    height: f32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
@@ -45,7 +46,15 @@ struct ShaderConfig {
     // TODO: fix max time
     max_time: f32,               // latest arrival time in seconds since midnight
     inverse_walk_speed_mps: f32, // walking speed in seconds per meter
-    jump_size: f32,              // jump size for JFA
+}
+
+// TODO: switch width, height, and jump_size to be u32
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct JFAConfig {
+    jfa_width: f32,  // how many pixels wide the image is
+    jfa_height: f32, // how many pixels high the image is
+    jump_size: f32,  // jump size for JFA
 }
 
 // Holds all the wgpu state needed to render
@@ -76,6 +85,9 @@ struct RenderState {
     shader_config: ShaderConfig,        // CPU-side copy
     shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
 
+    jfa_config: JFAConfig,           // CPU-side copy
+    jfa_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+
     jfa_texture_a: wgpu::Texture,
     jfa_texture_b: wgpu::Texture,
     jfa_texture_a_view: wgpu::TextureView,
@@ -98,6 +110,7 @@ impl RenderState {
         gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
         gpu_grid_stops: &Vec<[f32; 4]>,
         shader_config: ShaderConfig,
+        jfa_config: JFAConfig,
     ) -> Self {
         let size = window.inner_size();
 
@@ -177,6 +190,12 @@ impl RenderState {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        let jfa_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Config Buffer"),
+            contents: bytemuck::cast_slice(&[jfa_config]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
         // TODO: this needs to dynamicall change with screen size
         // Build jump sequence: 8192, 4096, ..., 1
         let mut jumps: Vec<f32> = Vec::new();
@@ -192,8 +211,9 @@ impl RenderState {
             usage: wgpu::BufferUsages::COPY_SRC,
         });
 
-        // Offset of jump_size in ShaderConfig (11th f32 field, zero-based index 10)
-        let shader_config_jump_offset_bytes = (10 * std::mem::size_of::<f32>()) as u64;
+        // TODO: make this less horrible (push constants would be really cool if they exist (they might))
+        // Offset of jump_size in JFAConfig (11th f32 field, zero-based index 10)
+        let shader_config_jump_offset_bytes = (2 * std::mem::size_of::<f32>()) as u64;
 
         // We record 2 timestamps per pass: begin/end.
         // Passes: seed + each jfa step + final render.
@@ -228,8 +248,8 @@ impl RenderState {
         // texture buffers
         let jfa_texture_desc = wgpu::TextureDescriptor {
             size: wgpu::Extent3d {
-                width: config.width,
-                height: config.height,
+                width: max(1, config.width / JFA_SCALE),
+                height: max(1, config.height / JFA_SCALE),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -268,7 +288,7 @@ impl RenderState {
                         },
                         count: None,
                     },
-                    // config @binding(1)
+                    // shader_config @binding(1)
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -287,6 +307,17 @@ impl RenderState {
                             access: wgpu::StorageTextureAccess::WriteOnly,
                             format: wgpu::TextureFormat::R32Uint,
                             view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    // jfa_config @binding(3)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
                         count: None,
                     },
@@ -321,9 +352,20 @@ impl RenderState {
                         },
                         count: None,
                     },
-                    // config @binding(2)
+                    // shader_config @binding(2)
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config @binding(3)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -351,10 +393,21 @@ impl RenderState {
                         },
                         count: None,
                     },
-                    // config @binding(1)
+                    // shader_config @binding(1)
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -387,6 +440,10 @@ impl RenderState {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -406,6 +463,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -427,6 +488,10 @@ impl RenderState {
                     binding: 2,
                     resource: shader_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -442,6 +507,10 @@ impl RenderState {
                     binding: 1,
                     resource: shader_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -456,6 +525,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -565,6 +638,9 @@ impl RenderState {
             shader_config,
             shader_config_buffer,
 
+            jfa_config,
+            jfa_config_buffer,
+
             jfa_texture_a,
             jfa_texture_b,
             jfa_texture_a_view,
@@ -586,6 +662,15 @@ impl RenderState {
             &self.shader_config_buffer,
             0,
             bytemuck::cast_slice(&[self.shader_config]),
+        );
+    }
+
+    /// Update the jfa config buffer (used to give real time input to the shader, like window resizes and such)
+    fn upload_jfa_config(&self) {
+        self.queue.write_buffer(
+            &self.jfa_config_buffer,
+            0,
+            bytemuck::cast_slice(&[self.jfa_config]),
         );
     }
 
@@ -690,9 +775,15 @@ impl RenderState {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
+            // update shader_config
             self.shader_config.width = new_size.width as f32;
             self.shader_config.height = new_size.height as f32;
             self.upload_shader_config();
+
+            // update jfa_config
+            self.jfa_config.jfa_width = max(1, new_size.width / JFA_SCALE) as f32;
+            self.jfa_config.jfa_height = max(1, new_size.height / JFA_SCALE) as f32;
+            self.upload_jfa_config();
 
             self.recreate_jfa_textures_and_bind_groups();
         }
@@ -703,8 +794,8 @@ impl RenderState {
     fn recreate_jfa_textures_and_bind_groups(&mut self) {
         let jfa_texture_desc = wgpu::TextureDescriptor {
             size: wgpu::Extent3d {
-                width: self.config.width,
-                height: self.config.height,
+                width: self.jfa_config.jfa_width as u32,
+                height: self.jfa_config.jfa_height as u32,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -740,6 +831,10 @@ impl RenderState {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -759,6 +854,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -780,6 +879,10 @@ impl RenderState {
                     binding: 2,
                     resource: self.shader_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -796,6 +899,10 @@ impl RenderState {
                     binding: 1,
                     resource: self.shader_config_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -810,6 +917,10 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: self.shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.jfa_config_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -867,7 +978,7 @@ impl RenderState {
                     encoder.copy_buffer_to_buffer(
                         &self.jfa_jump_values_buffer,
                         src_offset,
-                        &self.shader_config_buffer,
+                        &self.jfa_config_buffer,
                         self.shader_config_jump_offset_bytes,
                         std::mem::size_of::<f32>() as u64,
                     );
@@ -1012,6 +1123,7 @@ struct App {
     gpu_grid_cell_vals: Vec<GpuGridCellVal>,
     gpu_grid_stops: Vec<[f32; 4]>,
     shader_config: ShaderConfig,
+    jfa_config: JFAConfig,
 
     // Post-init data
     window: Option<Arc<Window>>,
@@ -1058,7 +1170,12 @@ impl App {
             begin_time: begin_time as f32,
             max_time: max_time as f32,
             inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
-            jump_size: 0.0, // gets overwritten later
+        };
+
+        let jfa_config = JFAConfig {
+            jfa_width: max(1, pixels_width / 2) as f32,
+            jfa_height: max(1, pixels_height / 2) as f32,
+            jump_size: 0.0,
         };
 
         let (gpu_grid_cell_keys, gpu_grid_cell_vals) = build_gpu_hash(&gpu_grid_cells);
@@ -1068,6 +1185,7 @@ impl App {
             gpu_grid_cell_vals,
             gpu_grid_stops,
             shader_config,
+            jfa_config,
             window: None,
             render_state: None,
             cursor_pos_px: None,
@@ -1099,6 +1217,7 @@ impl ApplicationHandler for App {
             &self.gpu_grid_cell_vals,
             &self.gpu_grid_stops,
             self.shader_config,
+            self.jfa_config,
         ));
 
         self.window = Some(window);
