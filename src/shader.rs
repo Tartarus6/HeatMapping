@@ -12,7 +12,7 @@ use crate::{
 };
 
 use tracing::{info_span, instrument};
-use wgpu::{BufferUsages, util::DeviceExt};
+use wgpu::{BufferUsages, Device, util::DeviceExt};
 use winit::{event_loop::EventLoop, window::Window};
 
 const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
@@ -30,6 +30,11 @@ pub struct Buffers {
     pub timestamp_resolve_buffer: wgpu::Buffer,
     pub timestamp_readback_buffer: wgpu::Buffer,
     pub timestamp_query_set: wgpu::QuerySet,
+
+    pub jfa_jump_count: u32,
+    // TODO: stupid bad byte offset. remove and replace with something less fragile
+    // byte offset of `jump_size` field inside ShaderConfig
+    pub shader_config_jump_offset_bytes: u64,
 }
 
 // Holds all the wgpu state needed to render
@@ -73,10 +78,6 @@ pub struct RenderState {
     pub jfa_texture_b: wgpu::Texture,
     pub jfa_texture_a_view: wgpu::TextureView,
     pub jfa_texture_b_view: wgpu::TextureView,
-
-    pub jfa_jump_count: u32,
-    // byte offset of `jump_size` field inside ShaderConfig
-    pub shader_config_jump_offset_bytes: u64,
 }
 
 impl RenderState {
@@ -139,93 +140,14 @@ impl RenderState {
         };
         surface.configure(&device, &config);
 
-        // Initializing Buffers
-        let gpu_grid_cell_keys_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("GPU Grid Cell Keys Buffer"),
-                contents: bytemuck::cast_slice(&gpu_grid_cell_keys),
-                usage: BufferUsages::STORAGE,
-            });
-
-        let gpu_grid_cell_vals_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("GPU Grid Cell Values Buffer"),
-                contents: bytemuck::cast_slice(&gpu_grid_cell_vals),
-                usage: BufferUsages::STORAGE,
-            });
-
-        let gpu_grid_stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("GPU Grid Stops Buffer"),
-            contents: bytemuck::cast_slice(&gpu_grid_stops),
-            usage: BufferUsages::STORAGE,
-        });
-
-        let shader_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Config Buffer"),
-            contents: bytemuck::cast_slice(&[shader_config]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let jfa_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Config Buffer"),
-            contents: bytemuck::cast_slice(&[jfa_config]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        // TODO: this needs to dynamicall change with screen size
-        // Build jump sequence: 8192, 4096, ..., 1
-        let mut jumps: Vec<f32> = Vec::new();
-        let mut j = 1024u32;
-        while j >= 1 {
-            jumps.push(j as f32);
-            j /= 2;
-        }
-        // jumps.push(1.0); // add an extra jump of distance 1 in order to improve output stability
-
-        let jfa_jump_values_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("JFA Jump Values Buffer"),
-            contents: bytemuck::cast_slice(&jumps),
-            usage: wgpu::BufferUsages::COPY_SRC,
-        });
-
-        // TODO: make this less horrible (push constants would be really cool if they exist (they might))
-        // Offset of jump_size in JFAConfig (11th f32 field, zero-based index 10)
-        let jfa_config_jump_offset_bytes = (2 * std::mem::size_of::<f32>()) as u64;
-
-        // We record 2 timestamps per pass: begin/end.
-        // Passes: seed + each jfa step + final render.
-        let timestamp_pass_count = 1 + (jumps.len() as u32) + 1 + 1; // seed + steps + render + stop_points
-        let timestamp_query_count = timestamp_pass_count * 2;
-
-        let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
-            label: Some("Frame Timestamp Query Set"),
-            ty: wgpu::QueryType::Timestamp,
-            count: timestamp_query_count,
-        });
-
-        let timestamp_buffer_size =
-            (timestamp_query_count as u64) * std::mem::size_of::<u64>() as u64;
-
-        let timestamp_resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Timestamp Resolve Buffer"),
-            size: timestamp_buffer_size,
-            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let timestamp_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Timestamp Readback Buffer"),
-            size: timestamp_buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        let minmax_init: [u32; 2] = [u32::MAX, 0];
-        let minmax_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("MinMax Buffer"),
-            contents: bytemuck::cast_slice(&minmax_init),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let buffers = initialize_buffers(
+            &device,
+            gpu_grid_cell_keys,
+            gpu_grid_cell_vals,
+            gpu_grid_stops,
+            shader_config,
+            jfa_config,
+        );
 
         // TODO: fix duplication of texture format and of texture usage
         // texture buffers
@@ -310,11 +232,11 @@ impl RenderState {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
+                    resource: buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -322,7 +244,7 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -426,15 +348,15 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: shader_config_buffer.as_entire_binding(),
+                    resource: buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -454,15 +376,15 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: shader_config_buffer.as_entire_binding(),
+                    resource: buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -559,19 +481,19 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
+                    resource: buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: minmax_buffer.as_entire_binding(),
+                    resource: buffers.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -586,19 +508,19 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
+                    resource: buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: minmax_buffer.as_entire_binding(),
+                    resource: buffers.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -696,19 +618,19 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
+                    resource: buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: minmax_buffer.as_entire_binding(),
+                    resource: buffers.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -723,19 +645,19 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
+                    resource: buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: minmax_buffer.as_entire_binding(),
+                    resource: buffers.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -823,20 +745,19 @@ impl RenderState {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
+                    resource: buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
             ],
         });
 
-        // Pipeline
         let stop_points_shader =
             device.create_shader_module(wgpu::include_wgsl!("shaders/stop_points.wgsl"));
 
@@ -874,18 +795,7 @@ impl RenderState {
         });
 
         Self {
-            buffers: Buffers {
-                gpu_grid_stops_buffer,
-                minmax_buffer,
-
-                shader_config_buffer,
-                jfa_config_buffer,
-                jfa_jump_values_buffer,
-
-                timestamp_query_set,
-                timestamp_resolve_buffer,
-                timestamp_readback_buffer,
-            },
+            buffers,
 
             surface,
             device,
@@ -925,9 +835,6 @@ impl RenderState {
             jfa_texture_b,
             jfa_texture_a_view,
             jfa_texture_b_view,
-
-            jfa_jump_count: jumps.len() as u32,
-            shader_config_jump_offset_bytes: jfa_config_jump_offset_bytes,
         }
     }
 
@@ -1362,14 +1269,14 @@ impl RenderState {
             // true -> read texture_b, write texture_a
             let mut flip = false;
             {
-                for jump_size_index in 0..self.jfa_jump_count {
+                for jump_size_index in 0..self.buffers.jfa_jump_count {
                     // Copy one f32 jump value into ShaderConfig.jump_size
                     let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
                     encoder.copy_buffer_to_buffer(
                         &self.buffers.jfa_jump_values_buffer,
                         src_offset,
                         &self.buffers.jfa_config_buffer,
-                        self.shader_config_jump_offset_bytes,
+                        self.buffers.shader_config_jump_offset_bytes,
                         std::mem::size_of::<f32>() as u64,
                     );
 
@@ -1627,4 +1534,114 @@ pub fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGri
     }
 
     return (keys, vals);
+}
+
+fn initialize_buffers(
+    device: &Device,
+    gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
+    gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
+    gpu_grid_stops: &Vec<[f32; 4]>,
+    shader_config: ShaderConfig,
+    jfa_config: JFAConfig,
+) -> Buffers {
+    // Initializing Buffers
+    let gpu_grid_cell_keys_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GPU Grid Cell Keys Buffer"),
+        contents: bytemuck::cast_slice(&gpu_grid_cell_keys),
+        usage: BufferUsages::STORAGE,
+    });
+
+    let gpu_grid_cell_vals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GPU Grid Cell Values Buffer"),
+        contents: bytemuck::cast_slice(&gpu_grid_cell_vals),
+        usage: BufferUsages::STORAGE,
+    });
+
+    let gpu_grid_stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GPU Grid Stops Buffer"),
+        contents: bytemuck::cast_slice(&gpu_grid_stops),
+        usage: BufferUsages::STORAGE,
+    });
+
+    let shader_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Config Buffer"),
+        contents: bytemuck::cast_slice(&[shader_config]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let jfa_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Config Buffer"),
+        contents: bytemuck::cast_slice(&[jfa_config]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // TODO: this needs to dynamicall change with screen size
+    // Build jump sequence: 8192, 4096, ..., 1
+    let mut jumps: Vec<f32> = Vec::new();
+    let mut j = 1024u32;
+    while j >= 1 {
+        jumps.push(j as f32);
+        j /= 2;
+    }
+    // jumps.push(1.0); // add an extra jump of distance 1 in order to improve output stability
+
+    let jfa_jump_values_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("JFA Jump Values Buffer"),
+        contents: bytemuck::cast_slice(&jumps),
+        usage: wgpu::BufferUsages::COPY_SRC,
+    });
+
+    // TODO: make this less horrible (push constants would be really cool if they exist (they might))
+    // Offset of jump_size in JFAConfig (11th f32 field, zero-based index 10)
+    let jfa_config_jump_offset_bytes = (2 * std::mem::size_of::<f32>()) as u64;
+
+    // We record 2 timestamps per pass: begin/end.
+    // Passes: seed + each jfa step + final render.
+    let timestamp_pass_count = 1 + (jumps.len() as u32) + 1 + 1; // seed + steps + render + stop_points
+    let timestamp_query_count = timestamp_pass_count * 2;
+
+    let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+        label: Some("Frame Timestamp Query Set"),
+        ty: wgpu::QueryType::Timestamp,
+        count: timestamp_query_count,
+    });
+
+    let timestamp_buffer_size = (timestamp_query_count as u64) * std::mem::size_of::<u64>() as u64;
+
+    let timestamp_resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Timestamp Resolve Buffer"),
+        size: timestamp_buffer_size,
+        usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    let timestamp_readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Timestamp Readback Buffer"),
+        size: timestamp_buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let minmax_init: [u32; 2] = [u32::MAX, 0];
+    let minmax_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("MinMax Buffer"),
+        contents: bytemuck::cast_slice(&minmax_init),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+
+    return Buffers {
+        gpu_grid_stops_buffer,
+        minmax_buffer,
+
+        shader_config_buffer,
+        jfa_config_buffer,
+        jfa_jump_values_buffer,
+
+        timestamp_query_set,
+        timestamp_resolve_buffer,
+        timestamp_readback_buffer,
+
+        jfa_jump_count: jumps.len() as u32,
+        shader_config_jump_offset_bytes: jfa_config_jump_offset_bytes,
+    };
 }
