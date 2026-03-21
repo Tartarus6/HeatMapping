@@ -3,9 +3,11 @@
 use csv::{Reader, StringRecord};
 use std::fs;
 use std::fs::File;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
+use crate::CACHE_DIRECTORY;
 use crate::utils::str_to_u32_hash;
 use crate::{
     GTFS_DIRECTORY, MAX_WALK_TRANSFER_DISTANCE,
@@ -16,9 +18,57 @@ use crate::{
     utils::{get_walk_time, str_time_to_seconds},
 };
 
+/// Gets the gtfs data for use by the program.
+/// If a cache is present, it'll just use the cache,
+/// otherwise, the GTFS files are parsed.
+pub fn get_gtfs_data() -> GTFSData {
+    let gtfs_data = match load_gtfs_data("cache/gtfs_data") {
+        // try loading from cache if possible
+        Ok(data) => data,
+        Err(_) => {
+            println!("Cache not found - parsing GTFS data...");
+
+            // if couldnt load gtfs data from cache, parse from gtfs files
+            let data = match parse_data() {
+                Ok(data) => data,
+                Err(err) => panic!("error parsing gtfs data: {:?}", err),
+            };
+
+            // save that parsed data into the cache
+            match save_gtfs_data(
+                &data,
+                format!("{}{}", CACHE_DIRECTORY, "gtfs_data").as_str(),
+            ) {
+                Ok(()) => (),
+                Err(err) => panic!("error saving gtfs data: {:?}", err),
+            };
+
+            data // return that data
+        }
+    };
+
+    return gtfs_data;
+}
+
+fn save_gtfs_data(data: &GTFSData, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = postcard::to_allocvec(data)?;
+    let mut file = File::create(path)?;
+    file.write_all(&bytes)?;
+    Ok(())
+}
+
+fn load_gtfs_data(path: &str) -> Result<GTFSData, Box<dyn std::error::Error>> {
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let data = postcard::from_bytes(&buffer)?;
+
+    Ok(data)
+}
+
 // TODO: make the data smaller where possible (removing unimportant data, maybe making a separate database not in-memory)
 /// reads the gtfs data from the gtfs files and puts them into a GTFSData struct instance
-pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
+fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut gtfs_data = GTFSData {
         stops: HashMap::new(),
         grid: SpatialGrid::new(MAX_WALK_TRANSFER_DISTANCE),
