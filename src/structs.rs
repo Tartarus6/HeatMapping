@@ -1,10 +1,6 @@
 // This file contains all of the data structures used throughout the code
 
-use std::{
-    collections::HashMap,
-    hash::{DefaultHasher, Hash, Hasher},
-    sync::atomic,
-};
+use std::{collections::HashMap, hash::Hash};
 
 use serde::{Deserialize, Serialize};
 

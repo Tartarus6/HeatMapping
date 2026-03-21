@@ -1,17 +1,16 @@
 use pollster::FutureExt;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Write};
 use std::time::Instant;
-use std::{f64, u32};
+use std::u32;
 
 use crate::dijkstra::initialize_dijkstra;
-use crate::parse::initialize_data;
+use crate::gtfs::get_gtfs_data;
 use crate::structs::{Date, DepartInstant, GTFSData, Position};
 
 mod app;
 mod dijkstra;
-mod parse;
+mod gtfs;
+mod render_state;
 mod shader;
 mod structs;
 mod utils;
@@ -64,27 +63,7 @@ fn main() {
     let now = Instant::now();
 
     // Gtfs data initialization
-    let gtfs_data = match load_gtfs_data("cache/gtfs_data") {
-        // try loading from cache if possible
-        Ok(data) => data,
-        Err(_) => {
-            println!("Cache not found - parsing GTFS data...");
-
-            // if couldnt load gtfs data from cache, parse from gtfs files
-            let data = match initialize_data() {
-                Ok(data) => data,
-                Err(err) => panic!("error parsing gtfs data: {:?}", err),
-            };
-
-            // save that parsed data into the cache
-            match save_gtfs_data(&data, format!("{CACHE_DIRECTORY}{}", "gtfs_data").as_str()) {
-                Ok(()) => (),
-                Err(err) => panic!("error saving gtfs data: {:?}", err),
-            };
-
-            data // return that data
-        }
-    };
+    let gtfs_data = get_gtfs_data();
     println!("Initializing: {}ms\n", now.elapsed().as_millis());
 
     // Dijkstra
@@ -158,20 +137,4 @@ fn initialize_gpu_grid(
     println!("gpu grid cell count: {}", gpu_grid_stops.len());
 
     Ok((gpu_grid_cells, gpu_grid_stops))
-}
-
-fn save_gtfs_data(data: &GTFSData, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let bytes = postcard::to_allocvec(data)?;
-    let mut file = File::create(path)?;
-    file.write_all(&bytes)?;
-    Ok(())
-}
-
-fn load_gtfs_data(path: &str) -> Result<GTFSData, Box<dyn std::error::Error>> {
-    let mut file = File::open(path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let data = postcard::from_bytes(&buffer)?;
-
-    Ok(data)
 }

@@ -3,9 +3,12 @@
 use csv::{Reader, StringRecord};
 use std::fs;
 use std::fs::File;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
+use crate::CACHE_DIRECTORY;
+use crate::utils::str_to_u32_hash;
 use crate::{
     GTFS_DIRECTORY, MAX_WALK_TRANSFER_DISTANCE,
     structs::{
@@ -15,9 +18,57 @@ use crate::{
     utils::{get_walk_time, str_time_to_seconds},
 };
 
+/// Gets the gtfs data for use by the program.
+/// If a cache is present, it'll just use the cache,
+/// otherwise, the GTFS files are parsed.
+pub fn get_gtfs_data() -> GTFSData {
+    let gtfs_data = match load_gtfs_data("cache/gtfs_data") {
+        // try loading from cache if possible
+        Ok(data) => data,
+        Err(_) => {
+            println!("Cache not found - parsing GTFS data...");
+
+            // if couldnt load gtfs data from cache, parse from gtfs files
+            let data = match parse_data() {
+                Ok(data) => data,
+                Err(err) => panic!("error parsing gtfs data: {:?}", err),
+            };
+
+            // save that parsed data into the cache
+            match save_gtfs_data(
+                &data,
+                format!("{}{}", CACHE_DIRECTORY, "gtfs_data").as_str(),
+            ) {
+                Ok(()) => (),
+                Err(err) => panic!("error saving gtfs data: {:?}", err),
+            };
+
+            data // return that data
+        }
+    };
+
+    return gtfs_data;
+}
+
+fn save_gtfs_data(data: &GTFSData, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = postcard::to_allocvec(data)?;
+    let mut file = File::create(path)?;
+    file.write_all(&bytes)?;
+    Ok(())
+}
+
+fn load_gtfs_data(path: &str) -> Result<GTFSData, Box<dyn std::error::Error>> {
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let data = postcard::from_bytes(&buffer)?;
+
+    Ok(data)
+}
+
 // TODO: make the data smaller where possible (removing unimportant data, maybe making a separate database not in-memory)
 /// reads the gtfs data from the gtfs files and puts them into a GTFSData struct instance
-pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
+fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut gtfs_data = GTFSData {
         stops: HashMap::new(),
         grid: SpatialGrid::new(MAX_WALK_TRANSFER_DISTANCE),
@@ -95,14 +146,14 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         for result in reader.records() {
             let record = result?;
 
-            let trip_id: u32 = require(&record, &idx, "trip_id")?.parse()?;
+            let trip_id: u32 = str_to_u32_hash(require(&record, &idx, "trip_id")?);
 
             gtfs_data.trips.insert(
                 trip_id,
                 Trip {
                     trip_id,
                     route_id: parse_route_id(require(&record, &idx, "route_id")?)?,
-                    service_id: require(&record, &idx, "service_id")?.parse()?,
+                    service_id: str_to_u32_hash(require(&record, &idx, "service_id")?),
                     stop_times: vec![],
                 },
             );
@@ -119,7 +170,7 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         let mut stop_times_count: u32 = 0;
         for result in reader.records() {
             let record = result?;
-            let trip_id: u32 = require(&record, &idx, "trip_id")?.parse()?;
+            let trip_id: u32 = str_to_u32_hash(require(&record, &idx, "trip_id")?);
 
             let trip = gtfs_data
                 .trips
@@ -147,7 +198,7 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         for result in reader.records() {
             let record = result?;
 
-            let service_id: u32 = require(&record, &idx, "service_id")?.parse()?;
+            let service_id: u32 = str_to_u32_hash(require(&record, &idx, "service_id")?);
             let date = Date::parse_date_string(require(&record, &idx, "date")?)?;
             let exception_type = ServiceExceptionType::parse_exception_type(
                 require(&record, &idx, "exception_type")?
@@ -181,7 +232,8 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                     from_stop_id: from_stop_id,
                     to_stop_id: parse_stop_id(require(&record, &idx, "to_stop_id")?)?,
                     // TODO: is the GTFS standard format for min_transfer_time in seconds already, or does it need to be converted?
-                    min_transfer_time: require(&record, &idx, "min_transfer_time")?
+                    min_transfer_time: require(&record, &idx, "min_transfer_time")
+                        .unwrap_or_default()
                         .parse()
                         .unwrap_or(0), // default to 0 if not declared
                 });
