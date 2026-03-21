@@ -19,16 +19,29 @@ const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 // TODO: add a scale reference (like google maps has) showing how zoomed in the view is
 
+pub struct Buffers {
+    pub gpu_grid_stops_buffer: wgpu::Buffer,
+    pub minmax_buffer: wgpu::Buffer,
+
+    pub shader_config_buffer: wgpu::Buffer,
+    pub jfa_config_buffer: wgpu::Buffer,
+    pub jfa_jump_values_buffer: wgpu::Buffer,
+
+    pub timestamp_resolve_buffer: wgpu::Buffer,
+    pub timestamp_readback_buffer: wgpu::Buffer,
+    pub timestamp_query_set: wgpu::QuerySet,
+}
+
 // Holds all the wgpu state needed to render
 pub struct RenderState {
+    pub buffers: Buffers,
+
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
 
     pub num_stops: u32,
-
-    pub gpu_grid_stops_buffer: wgpu::Buffer,
 
     pub jfa_seed_pipeline: wgpu::ComputePipeline,
     pub jfa_seed_bind_group: wgpu::BindGroup,
@@ -43,7 +56,6 @@ pub struct RenderState {
     pub minmax_bind_group_layout: wgpu::BindGroupLayout,
     pub minmax_bind_group_a: wgpu::BindGroup,
     pub minmax_bind_group_b: wgpu::BindGroup,
-    pub minmax_buffer: wgpu::Buffer,
 
     pub jfa_render_pipeline: wgpu::RenderPipeline,
     pub jfa_render_bind_group_a: wgpu::BindGroup,
@@ -54,25 +66,17 @@ pub struct RenderState {
     pub stop_points_bind_group: wgpu::BindGroup,
     pub stop_points_bind_group_layout: wgpu::BindGroupLayout,
 
-    pub shader_config: ShaderConfig,        // CPU-side copy
-    pub shader_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
-
-    pub jfa_config: JFAConfig,           // CPU-side copy
-    pub jfa_config_buffer: wgpu::Buffer, // GPU-side uniform buffer
+    pub shader_config: ShaderConfig, // CPU-side copy
+    pub jfa_config: JFAConfig,       // CPU-side copy
 
     pub jfa_texture_a: wgpu::Texture,
     pub jfa_texture_b: wgpu::Texture,
     pub jfa_texture_a_view: wgpu::TextureView,
     pub jfa_texture_b_view: wgpu::TextureView,
 
-    pub jfa_jump_values_buffer: wgpu::Buffer,
     pub jfa_jump_count: u32,
     // byte offset of `jump_size` field inside ShaderConfig
     pub shader_config_jump_offset_bytes: u64,
-
-    pub timestamp_query_set: wgpu::QuerySet,
-    pub timestamp_resolve_buffer: wgpu::Buffer,
-    pub timestamp_readback_buffer: wgpu::Buffer,
 }
 
 impl RenderState {
@@ -870,14 +874,25 @@ impl RenderState {
         });
 
         Self {
+            buffers: Buffers {
+                gpu_grid_stops_buffer,
+                minmax_buffer,
+
+                shader_config_buffer,
+                jfa_config_buffer,
+                jfa_jump_values_buffer,
+
+                timestamp_query_set,
+                timestamp_resolve_buffer,
+                timestamp_readback_buffer,
+            },
+
             surface,
             device,
             queue,
             config,
 
             num_stops: gpu_grid_stops.len() as u32,
-
-            gpu_grid_stops_buffer,
 
             jfa_seed_pipeline,
             jfa_seed_bind_group,
@@ -892,7 +907,6 @@ impl RenderState {
             minmax_bind_group_layout,
             minmax_bind_group_a,
             minmax_bind_group_b,
-            minmax_buffer,
 
             jfa_render_pipeline,
             jfa_render_bind_group_a,
@@ -904,30 +918,23 @@ impl RenderState {
             stop_points_bind_group_layout,
 
             shader_config,
-            shader_config_buffer,
 
             jfa_config,
-            jfa_config_buffer,
 
             jfa_texture_a,
             jfa_texture_b,
             jfa_texture_a_view,
             jfa_texture_b_view,
 
-            jfa_jump_values_buffer,
             jfa_jump_count: jumps.len() as u32,
             shader_config_jump_offset_bytes: jfa_config_jump_offset_bytes,
-
-            timestamp_query_set,
-            timestamp_resolve_buffer,
-            timestamp_readback_buffer,
         }
     }
 
     /// Update the shader config buffer (used to give real time input to the shader, like window resizes and such)
     pub fn upload_shader_config(&self) {
         self.queue.write_buffer(
-            &self.shader_config_buffer,
+            &self.buffers.shader_config_buffer,
             0,
             bytemuck::cast_slice(&[self.shader_config]),
         );
@@ -936,7 +943,7 @@ impl RenderState {
     /// Update the jfa config buffer (used to give real time input to the shader, like window resizes and such)
     pub fn upload_jfa_config(&self) {
         self.queue.write_buffer(
-            &self.jfa_config_buffer,
+            &self.buffers.jfa_config_buffer,
             0,
             bytemuck::cast_slice(&[self.jfa_config]),
         );
@@ -1128,11 +1135,11 @@ impl RenderState {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: self.buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.shader_config_buffer.as_entire_binding(),
+                    resource: self.buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -1140,7 +1147,7 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.jfa_config_buffer.as_entire_binding(),
+                    resource: self.buffers.jfa_config_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1160,15 +1167,15 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.shader_config_buffer.as_entire_binding(),
+                    resource: self.buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.jfa_config_buffer.as_entire_binding(),
+                    resource: self.buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: self.buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1188,15 +1195,15 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.shader_config_buffer.as_entire_binding(),
+                    resource: self.buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.jfa_config_buffer.as_entire_binding(),
+                    resource: self.buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: self.buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1211,19 +1218,19 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.shader_config_buffer.as_entire_binding(),
+                    resource: self.buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.jfa_config_buffer.as_entire_binding(),
+                    resource: self.buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: self.buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.minmax_buffer.as_entire_binding(),
+                    resource: self.buffers.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1238,19 +1245,19 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.shader_config_buffer.as_entire_binding(),
+                    resource: self.buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.jfa_config_buffer.as_entire_binding(),
+                    resource: self.buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: self.buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.minmax_buffer.as_entire_binding(),
+                    resource: self.buffers.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1266,19 +1273,19 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.shader_config_buffer.as_entire_binding(),
+                    resource: self.buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.jfa_config_buffer.as_entire_binding(),
+                    resource: self.buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: self.buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.minmax_buffer.as_entire_binding(),
+                    resource: self.buffers.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1293,19 +1300,19 @@ impl RenderState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.shader_config_buffer.as_entire_binding(),
+                    resource: self.buffers.shader_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.jfa_config_buffer.as_entire_binding(),
+                    resource: self.buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: self.buffers.gpu_grid_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.minmax_buffer.as_entire_binding(),
+                    resource: self.buffers.minmax_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1332,7 +1339,7 @@ impl RenderState {
                     encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("Seed Compute Pass"),
                         timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
-                            query_set: &self.timestamp_query_set,
+                            query_set: &self.buffers.timestamp_query_set,
                             beginning_of_pass_write_index: Some(q),
                             end_of_pass_write_index: Some(q + 1),
                         }),
@@ -1359,9 +1366,9 @@ impl RenderState {
                     // Copy one f32 jump value into ShaderConfig.jump_size
                     let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
                     encoder.copy_buffer_to_buffer(
-                        &self.jfa_jump_values_buffer,
+                        &self.buffers.jfa_jump_values_buffer,
                         src_offset,
-                        &self.jfa_config_buffer,
+                        &self.buffers.jfa_config_buffer,
                         self.shader_config_jump_offset_bytes,
                         std::mem::size_of::<f32>() as u64,
                     );
@@ -1370,7 +1377,7 @@ impl RenderState {
                         encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                             label: Some("Seed Compute Pass"),
                             timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
-                                query_set: &self.timestamp_query_set,
+                                query_set: &self.buffers.timestamp_query_set,
                                 beginning_of_pass_write_index: Some(q),
                                 end_of_pass_write_index: Some(q + 1),
                             }),
@@ -1402,8 +1409,11 @@ impl RenderState {
             {
                 // reset minmax buffer each frame
                 let minmax_init: [u32; 2] = [u32::MAX, 0];
-                self.queue
-                    .write_buffer(&self.minmax_buffer, 0, bytemuck::cast_slice(&minmax_init));
+                self.queue.write_buffer(
+                    &self.buffers.minmax_buffer,
+                    0,
+                    bytemuck::cast_slice(&minmax_init),
+                );
 
                 let minmax_bind_group = if flip {
                     &self.minmax_bind_group_a
@@ -1460,7 +1470,7 @@ impl RenderState {
                     depth_stencil_attachment: None,
                     occlusion_query_set: None,
                     timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
-                        query_set: &self.timestamp_query_set,
+                        query_set: &self.buffers.timestamp_query_set,
                         beginning_of_pass_write_index: Some(q),
                         end_of_pass_write_index: Some(q + 1),
                     }),
@@ -1494,7 +1504,7 @@ impl RenderState {
                     depth_stencil_attachment: None,
                     occlusion_query_set: None,
                     timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
-                        query_set: &self.timestamp_query_set,
+                        query_set: &self.buffers.timestamp_query_set,
                         beginning_of_pass_write_index: Some(q),
                         end_of_pass_write_index: Some(q + 1),
                     }), // or add timestamps if you want
@@ -1510,15 +1520,15 @@ impl RenderState {
         }
 
         encoder.resolve_query_set(
-            &self.timestamp_query_set,
+            &self.buffers.timestamp_query_set,
             0..q,
-            &self.timestamp_resolve_buffer,
+            &self.buffers.timestamp_resolve_buffer,
             0,
         );
         encoder.copy_buffer_to_buffer(
-            &self.timestamp_resolve_buffer,
+            &self.buffers.timestamp_resolve_buffer,
             0,
-            &self.timestamp_readback_buffer,
+            &self.buffers.timestamp_readback_buffer,
             0,
             (q as u64) * std::mem::size_of::<u64>() as u64,
         );
@@ -1533,7 +1543,10 @@ impl RenderState {
         });
 
         // Map and read timestamps
-        let slice = self.timestamp_readback_buffer.slice(..(q as u64 * 8));
+        let slice = self
+            .buffers
+            .timestamp_readback_buffer
+            .slice(..(q as u64 * 8));
         slice.map_async(wgpu::MapMode::Read, |_| {});
         let _ = self.device.poll(wgpu::PollType::Wait {
             submission_index: None,
@@ -1556,7 +1569,7 @@ impl RenderState {
         }
 
         drop(data);
-        self.timestamp_readback_buffer.unmap();
+        self.buffers.timestamp_readback_buffer.unmap();
 
         Ok(())
     }
