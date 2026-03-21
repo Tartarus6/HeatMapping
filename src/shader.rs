@@ -1,19 +1,15 @@
 // This file contains all of the implementations related to shaders and rendering
 
-use std::cmp::max;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::{
-    GTFSData, GpuGridCell, JFA_SCALE, Position,
+    GTFSData, GpuGridCell,
     app::App,
-    structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
-    utils::{hash2_i32, meters_per_pixel},
+    structs::{GpuGridCellKey, GpuGridCellVal},
+    utils::hash2_i32,
 };
 
-use tracing::{info_span, instrument};
-use wgpu::{BufferUsages, Device, util::DeviceExt};
-use winit::{event_loop::EventLoop, window::Window};
+use winit::event_loop::EventLoop;
 
 // TODO: switch to giving shader some kinda spatial grid rather than having it iterate through all stops for every pixel
 // TODO: switch to a multi-stage aproach that first calculates the arrival time to each pixel, then turns that into a heatmap

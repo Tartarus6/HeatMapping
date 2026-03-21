@@ -627,6 +627,8 @@ pub fn initialize_buffers(
     jfa_config: JFAConfig,
 ) -> Buffers {
     // Initializing Buffers
+
+    // TODO: use gpu_grid_cell_keys_buffer and gpu_grid_cell_vals_buffer in planned dijkstra shader
     let gpu_grid_cell_keys_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("GPU Grid Cell Keys Buffer"),
         contents: bytemuck::cast_slice(&gpu_grid_cell_keys),
