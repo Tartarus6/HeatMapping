@@ -248,11 +248,7 @@ impl RenderState {
         let jfa_texture_a_view = jfa_texture_a.create_view(&Default::default());
         let jfa_texture_b_view = jfa_texture_b.create_view(&Default::default());
 
-        // Setting Bind Group Layout (buffer layout)
-        //
-        // A bind group layout describes the types of resources that a bind group can contain. Think
-        // of this like a C-style header declaration, ensuring both the pipeline and bind group agree
-        // on the types of resources.
+        // --- JFA Seed ---
         let jfa_seed_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("JFA Seed Bind Group Layout"),
@@ -304,6 +300,49 @@ impl RenderState {
                 ],
             });
 
+        let jfa_seed_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Seed Bind Group"),
+            layout: &jfa_seed_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let jfa_seed_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/seed_scatter.wgsl"));
+
+        let jfa_seed_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("JFA Seed Pipeline Layout"),
+                bind_group_layouts: &[&jfa_seed_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let jfa_seed_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("JFA Seed Pipeline"),
+            layout: Some(&jfa_seed_pipeline_layout),
+            module: &jfa_seed_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // --- JFA Step ---
         let jfa_step_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("JFA Step Bind Group Layout"),
@@ -368,6 +407,82 @@ impl RenderState {
                 ],
             });
 
+        // Bind group for reading from texture_a and writing to texture_b
+        let jfa_step_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group A"),
+            layout: &jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Bind group for reading from texture_b and writing to texture_a
+        let jfa_step_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Step Bind Group B"),
+            layout: &jfa_step_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let jfa_step_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/jfa_step.wgsl"));
+
+        let jfa_step_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("JFA Step Pipeline Layout"),
+                bind_group_layouts: &[&jfa_step_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let jfa_step_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("JFA Step Pipeline"),
+            layout: Some(&jfa_step_pipeline_layout),
+            module: &jfa_step_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // --- Minmax ---
         let minmax_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("MinMax Bind Group Layout"),
@@ -430,6 +545,80 @@ impl RenderState {
                 ],
             });
 
+        let minmax_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group A"),
+            layout: &minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let minmax_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MinMax Bind Group B"),
+            layout: &minmax_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: minmax_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let minmax_shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/arrival_minmax.wgsl"));
+
+        let minmax_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("MinMax Pipeline Layout"),
+                bind_group_layouts: &[&minmax_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let minmax_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("MinMax Pipeline"),
+            layout: Some(&minmax_pipeline_layout),
+            module: &minmax_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // --- JFA Render ---
         let jfa_render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("JFA Render Bind Group Layout"),
@@ -493,185 +682,6 @@ impl RenderState {
                 ],
             });
 
-        let stop_points_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Stop Points Bind Group Layout"),
-                entries: &[
-                    // grid_stops @binding(0)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // shader_config @binding(1)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // jfa_config @binding(2)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
-        // Putting Buffers into Bind Layout
-        //
-        // The bind group contains the actual resources to bind to the pipeline.
-        //
-        // Even when the buffers are individually dropped, wgpu will keep the bind group and buffers
-        // alive until the bind group itself is dropped.
-        let jfa_seed_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("JFA Seed Bind Group"),
-            layout: &jfa_seed_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: jfa_config_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        // Bind group for reading from texture_a and writing to texture_b
-        let jfa_step_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("JFA Step Bind Group A"),
-            layout: &jfa_step_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: shader_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: jfa_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        // Bind group for reading from texture_b and writing to texture_a
-        let jfa_step_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("JFA Step Bind Group B"),
-            layout: &jfa_step_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: shader_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: jfa_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        let minmax_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("MinMax Bind Group A"),
-            layout: &minmax_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: jfa_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: minmax_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        let minmax_bind_group_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("MinMax Bind Group B"),
-            layout: &minmax_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&jfa_texture_b_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: jfa_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: minmax_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
         let jfa_render_bind_group_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("JFA Render Bind Group A"),
             layout: &jfa_render_bind_group_layout,
@@ -726,87 +736,6 @@ impl RenderState {
             ],
         });
 
-        let stop_points_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Stop Point Bind Group"),
-            layout: &stop_points_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: gpu_grid_stops_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: shader_config_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: jfa_config_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        // JFA Seed Pipeline
-        let jfa_seed_shader =
-            device.create_shader_module(wgpu::include_wgsl!("shaders/seed_scatter.wgsl"));
-
-        let jfa_seed_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("JFA Seed Pipeline Layout"),
-                bind_group_layouts: &[&jfa_seed_bind_group_layout],
-                immediate_size: 0,
-            });
-
-        let jfa_seed_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("JFA Seed Pipeline"),
-            layout: Some(&jfa_seed_pipeline_layout),
-            module: &jfa_seed_shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        // JFA Step Pipeline
-        // Compute Pipeline
-        let jfa_step_shader =
-            device.create_shader_module(wgpu::include_wgsl!("shaders/jfa_step.wgsl"));
-
-        let jfa_step_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("JFA Step Pipeline Layout"),
-                bind_group_layouts: &[&jfa_step_bind_group_layout],
-                immediate_size: 0,
-            });
-
-        let jfa_step_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("JFA Step Pipeline"),
-            layout: Some(&jfa_step_pipeline_layout),
-            module: &jfa_step_shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        // Minmax Pipeline
-        let minmax_shader =
-            device.create_shader_module(wgpu::include_wgsl!("shaders/arrival_minmax.wgsl"));
-
-        let minmax_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("MinMax Pipeline Layout"),
-                bind_group_layouts: &[&minmax_bind_group_layout],
-                immediate_size: 0,
-            });
-
-        let minmax_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("MinMax Pipeline"),
-            layout: Some(&minmax_pipeline_layout),
-            module: &minmax_shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        // JFA Render Pipeline
         let jfa_render_shader =
             device.create_shader_module(wgpu::include_wgsl!("shaders/render.wgsl"));
 
@@ -843,7 +772,67 @@ impl RenderState {
             cache: None,
         });
 
-        // Stop Points Pipeline
+        // --- Stop Points ---
+        let stop_points_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Stop Points Bind Group Layout"),
+                entries: &[
+                    // grid_stops @binding(0)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // shader_config @binding(1)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // jfa_config @binding(2)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let stop_points_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Stop Point Bind Group"),
+            layout: &stop_points_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu_grid_stops_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shader_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: jfa_config_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Pipeline
         let stop_points_shader =
             device.create_shader_module(wgpu::include_wgsl!("shaders/stop_points.wgsl"));
 
