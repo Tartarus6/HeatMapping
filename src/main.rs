@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::time::Instant;
-use std::{f64, u32};
+use std::u32;
 
 use crate::dijkstra::initialize_dijkstra;
 use crate::parse::initialize_data;

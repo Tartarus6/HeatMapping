@@ -6,6 +6,7 @@ use std::fs::File;
 use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
+use crate::utils::str_to_u32_hash;
 use crate::{
     GTFS_DIRECTORY, MAX_WALK_TRANSFER_DISTANCE,
     structs::{
@@ -95,14 +96,14 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         for result in reader.records() {
             let record = result?;
 
-            let trip_id: u32 = require(&record, &idx, "trip_id")?.parse()?;
+            let trip_id: u32 = str_to_u32_hash(require(&record, &idx, "trip_id")?);
 
             gtfs_data.trips.insert(
                 trip_id,
                 Trip {
                     trip_id,
                     route_id: parse_route_id(require(&record, &idx, "route_id")?)?,
-                    service_id: require(&record, &idx, "service_id")?.parse()?,
+                    service_id: str_to_u32_hash(require(&record, &idx, "service_id")?),
                     stop_times: vec![],
                 },
             );
@@ -119,7 +120,7 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         let mut stop_times_count: u32 = 0;
         for result in reader.records() {
             let record = result?;
-            let trip_id: u32 = require(&record, &idx, "trip_id")?.parse()?;
+            let trip_id: u32 = str_to_u32_hash(require(&record, &idx, "trip_id")?);
 
             let trip = gtfs_data
                 .trips
@@ -147,7 +148,7 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         for result in reader.records() {
             let record = result?;
 
-            let service_id: u32 = require(&record, &idx, "service_id")?.parse()?;
+            let service_id: u32 = str_to_u32_hash(require(&record, &idx, "service_id")?);
             let date = Date::parse_date_string(require(&record, &idx, "date")?)?;
             let exception_type = ServiceExceptionType::parse_exception_type(
                 require(&record, &idx, "exception_type")?
@@ -181,7 +182,8 @@ pub fn initialize_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                     from_stop_id: from_stop_id,
                     to_stop_id: parse_stop_id(require(&record, &idx, "to_stop_id")?)?,
                     // TODO: is the GTFS standard format for min_transfer_time in seconds already, or does it need to be converted?
-                    min_transfer_time: require(&record, &idx, "min_transfer_time")?
+                    min_transfer_time: require(&record, &idx, "min_transfer_time")
+                        .unwrap_or_default()
                         .parse()
                         .unwrap_or(0), // default to 0 if not declared
                 });
