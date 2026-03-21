@@ -1,4 +1,4 @@
-// This file contains all of the implementations for functions with general utility used in multiple files
+//! This file contains all of the implementations for functions with general utility used in multiple files
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 

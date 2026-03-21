@@ -1,4 +1,4 @@
-// This file contains all of the implementations related to shaders and rendering
+//! This file contains all of the implementations related to shaders and rendering
 
 use std::collections::HashMap;
 

@@ -1,4 +1,4 @@
-// This file contains all of the implementations related to the dijkstra algorithm
+//! This file contains all of the implementations related to the dijkstra algorithm
 
 use std::{
     cmp::Reverse,
