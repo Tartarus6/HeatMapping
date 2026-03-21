@@ -3,11 +3,7 @@ use tracing::{info_span, instrument};
 use wgpu::{BufferUsages, Device, util::DeviceExt};
 use winit::window::Window;
 
-use crate::{
-    JFA_SCALE,
-    structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, Position, ShaderConfig},
-    utils::meters_per_pixel,
-};
+use crate::structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig};
 
 const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
@@ -77,275 +73,6 @@ pub struct RenderState {
 }
 
 impl RenderState {
-    pub async fn new(
-        window: Arc<Window>,
-        gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
-        gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
-        gpu_grid_stops: &Vec<[f32; 4]>,
-        shader_config: ShaderConfig,
-        jfa_config: JFAConfig,
-    ) -> Self {
-        let size = window.inner_size();
-
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-
-        // SAFETY: the surface must not outlive the window it was created from.
-        // We keep both alive together in App, so this is safe.
-        let surface = instance.create_surface(window).unwrap();
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::CLEAR_TEXTURE | wgpu::Features::TIMESTAMP_QUERY,
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::default(),
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                trace: wgpu::Trace::default(),
-            })
-            .await
-            .unwrap();
-
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(surface_caps.formats[0]);
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width: size.width,
-            height: size.height,
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-
-        let buffers = initialize_buffers(
-            &device,
-            gpu_grid_cell_keys,
-            gpu_grid_cell_vals,
-            gpu_grid_stops,
-            shader_config,
-            jfa_config,
-        );
-
-        let shader_resources =
-            initialize_shader_resources(&device, &buffers, &jfa_config, surface_format);
-
-        Self {
-            buffers,
-            shader_resources,
-
-            surface,
-            device,
-            queue,
-            config,
-
-            num_stops: gpu_grid_stops.len() as u32,
-
-            shader_config,
-
-            jfa_config,
-        }
-    }
-
-    /// Update the shader config buffer (used to give real time input to the shader, like window resizes and such)
-    pub fn upload_shader_config(&self) {
-        self.queue.write_buffer(
-            &self.buffers.shader_config_buffer,
-            0,
-            bytemuck::cast_slice(&[self.shader_config]),
-        );
-    }
-
-    /// Update the jfa config buffer (used to give real time input to the shader, like window resizes and such)
-    pub fn upload_jfa_config(&self) {
-        self.queue.write_buffer(
-            &self.buffers.jfa_config_buffer,
-            0,
-            bytemuck::cast_slice(&[self.jfa_config]),
-        );
-    }
-
-    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
-    pub fn zoom(&mut self, zoom_steps: f32, cursor_px: winit::dpi::PhysicalPosition<f64>) {
-        if zoom_steps == 0.0 || self.config.width == 0 || self.config.height == 0 {
-            return;
-        }
-
-        let w = self.config.width as f32;
-        let h = self.config.height as f32;
-
-        let x = cursor_px.x as f32;
-        let y = cursor_px.y as f32;
-
-        // clamp to window
-        let x = x.clamp(0.0, w);
-        let y = y.clamp(0.0, h);
-
-        // current bbox
-        let min_lon = self.shader_config.bbox_min_lon;
-        let max_lon = self.shader_config.bbox_max_lon;
-        let min_lat = self.shader_config.bbox_min_lat;
-        let max_lat = self.shader_config.bbox_max_lat;
-
-        let lon_span = max_lon - min_lon;
-        let lat_span = max_lat - min_lat;
-
-        // pixel -> normalized
-        let u = x / w; // left..right
-        let v = y / h; // bottom..top (since map has north as up)
-
-        // world under cursor before zoom
-        let world_lon = min_lon + u * lon_span;
-        let world_lat = max_lat - v * lat_span; // y-down screen, lat-up world
-
-        // zoom factor
-        let zoom_per_step = 1.1_f32;
-        let factor = zoom_per_step.powf(zoom_steps);
-
-        // shrink spans when zooming in
-        let new_lon_span = lon_span / factor;
-        let new_lat_span = lat_span / factor;
-
-        // solve new min/max so cursor anchors same world point
-        let new_min_lon = world_lon - u * new_lon_span;
-        let new_max_lon = new_min_lon + new_lon_span;
-
-        let new_max_lat = world_lat + v * new_lat_span;
-        let new_min_lat = new_max_lat - new_lat_span;
-
-        self.shader_config.bbox_min_lon = new_min_lon;
-        self.shader_config.bbox_max_lon = new_max_lon;
-        self.shader_config.bbox_min_lat = new_min_lat;
-        self.shader_config.bbox_max_lat = new_max_lat;
-
-        self.upload_shader_config();
-
-        // jfa config update
-        let meters_per_pixel = meters_per_pixel(
-            Position {
-                lat: self.shader_config.bbox_min_lat as f32,
-                lon: self.shader_config.bbox_min_lon as f32,
-            },
-            Position {
-                lat: self.shader_config.bbox_max_lat as f32,
-                lon: self.shader_config.bbox_max_lon as f32,
-            },
-            self.jfa_config.jfa_width as u32,
-            self.jfa_config.jfa_height as u32,
-        );
-
-        self.jfa_config.meters_per_px_x = meters_per_pixel.0;
-        self.jfa_config.meters_per_px_y = meters_per_pixel.1;
-
-        self.upload_jfa_config();
-    }
-
-    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
-    pub fn pan(&mut self, dx_px: f32, dy_px: f32) {
-        if self.config.width == 0 || self.config.height == 0 {
-            return;
-        }
-
-        let w = self.config.width as f32;
-        let h = self.config.height as f32;
-
-        let lon_span = self.shader_config.bbox_max_lon - self.shader_config.bbox_min_lon;
-        let lat_span = self.shader_config.bbox_max_lat - self.shader_config.bbox_min_lat;
-
-        // pixel drag -> world delta
-        let dlon = (dx_px / w) * lon_span;
-        let dlat = (dy_px / h) * lat_span;
-
-        // drag right should move map right (content follows cursor):
-        // so bbox moves opposite in lon
-        self.shader_config.bbox_min_lon -= dlon;
-        self.shader_config.bbox_max_lon -= dlon;
-
-        // drag down should move map down on screen:
-        // world lat decreases when moving down
-        self.shader_config.bbox_min_lat += dlat;
-        self.shader_config.bbox_max_lat += dlat;
-
-        self.upload_shader_config();
-    }
-
-    // TODO: remove this function. move logic into app (i want Render State to only have rendering stuff to increase portability)
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            // recalculate bounding box to adjust to new size
-            // pin the bbox min corner, and just shrink/grow bounding box to keep constant effective zoom level
-            let width_mult: f32 = new_size.width as f32 / self.config.width as f32;
-            let height_mult: f32 = new_size.height as f32 / self.config.height as f32;
-
-            self.shader_config.bbox_max_lat = self.shader_config.bbox_min_lat
-                + (height_mult
-                    * (self.shader_config.bbox_max_lat - self.shader_config.bbox_min_lat) as f32);
-            self.shader_config.bbox_max_lon = self.shader_config.bbox_min_lon
-                + (width_mult
-                    * (self.shader_config.bbox_max_lon - self.shader_config.bbox_min_lon) as f32);
-
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
-
-            // update shader_config
-            self.shader_config.width = new_size.width as f32;
-            self.shader_config.height = new_size.height as f32;
-            self.upload_shader_config();
-
-            // update jfa_config
-            self.jfa_config.jfa_width = max(1, new_size.width / JFA_SCALE) as f32;
-            self.jfa_config.jfa_height = max(1, new_size.height / JFA_SCALE) as f32;
-
-            let meters_per_pixel = meters_per_pixel(
-                Position {
-                    lat: self.shader_config.bbox_min_lat as f32,
-                    lon: self.shader_config.bbox_min_lon as f32,
-                },
-                Position {
-                    lat: self.shader_config.bbox_max_lat as f32,
-                    lon: self.shader_config.bbox_max_lon as f32,
-                },
-                max(1, new_size.width / JFA_SCALE),
-                max(1, new_size.height / JFA_SCALE),
-            );
-
-            self.jfa_config.meters_per_px_x = meters_per_pixel.0;
-            self.jfa_config.meters_per_px_y = meters_per_pixel.1;
-
-            self.upload_jfa_config();
-
-            self.recreate_jfa_textures_and_bind_groups();
-        }
-    }
-
-    /// recreates textures and bind groups for the jump flood algorithm. Needed when resizing, because texture changes size.
-    pub fn recreate_jfa_textures_and_bind_groups(&mut self) {
-        self.shader_resources.recreate_jfa_textures_and_bind_groups(
-            &self.device,
-            &self.buffers,
-            &self.jfa_config,
-        );
-    }
-
     #[instrument(skip(self))]
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let _span = info_span!("frame").entered();
@@ -615,6 +342,121 @@ impl RenderState {
         self.buffers.timestamp_readback_buffer.unmap();
 
         Ok(())
+    }
+
+    pub async fn new(
+        window: Arc<Window>,
+        gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
+        gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
+        gpu_grid_stops: &Vec<[f32; 4]>,
+        shader_config: ShaderConfig,
+        jfa_config: JFAConfig,
+    ) -> Self {
+        let size = window.inner_size();
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        // SAFETY: the surface must not outlive the window it was created from.
+        // We keep both alive together in App, so this is safe.
+        let surface = instance.create_surface(window).unwrap();
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .unwrap();
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::CLEAR_TEXTURE | wgpu::Features::TIMESTAMP_QUERY,
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
+            })
+            .await
+            .unwrap();
+
+        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(surface_caps.formats[0]);
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: surface_caps.present_modes[0],
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &config);
+
+        let buffers = initialize_buffers(
+            &device,
+            gpu_grid_cell_keys,
+            gpu_grid_cell_vals,
+            gpu_grid_stops,
+            shader_config,
+            jfa_config,
+        );
+
+        let shader_resources =
+            initialize_shader_resources(&device, &buffers, &jfa_config, surface_format);
+
+        Self {
+            buffers,
+            shader_resources,
+
+            surface,
+            device,
+            queue,
+            config,
+
+            num_stops: gpu_grid_stops.len() as u32,
+
+            shader_config,
+
+            jfa_config,
+        }
+    }
+
+    /// Update the shader config buffer (used to give real time input to the shader, like window resizes and such)
+    pub fn upload_shader_config(&self) {
+        self.queue.write_buffer(
+            &self.buffers.shader_config_buffer,
+            0,
+            bytemuck::cast_slice(&[self.shader_config]),
+        );
+    }
+
+    /// Update the jfa config buffer (used to give real time input to the shader, like window resizes and such)
+    pub fn upload_jfa_config(&self) {
+        self.queue.write_buffer(
+            &self.buffers.jfa_config_buffer,
+            0,
+            bytemuck::cast_slice(&[self.jfa_config]),
+        );
+    }
+
+    /// recreates textures and bind groups for the jump flood algorithm. Needed when resizing, because texture changes size.
+    pub fn recreate_jfa_textures_and_bind_groups(&mut self) {
+        self.shader_resources.recreate_jfa_textures_and_bind_groups(
+            &self.device,
+            &self.buffers,
+            &self.jfa_config,
+        );
     }
 }
 
