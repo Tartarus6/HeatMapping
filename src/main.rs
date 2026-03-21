@@ -12,6 +12,7 @@ use crate::structs::{Date, DepartInstant, GTFSData, Position};
 mod app;
 mod dijkstra;
 mod parse;
+mod render_state;
 mod shader;
 mod structs;
 mod utils;

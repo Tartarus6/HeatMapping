@@ -6,10 +6,11 @@ use winit::window::WindowId;
 use winit::{application::ApplicationHandler, event_loop::ActiveEventLoop, window::Window};
 
 use crate::MAX_WALK_TRANSFER_DISTANCE;
+use crate::render_state::RenderState;
 use crate::utils::meters_per_pixel;
 use crate::{
     DEPART_INSTANT, GpuGridCell, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, WALKING_SPEED,
-    shader::{RenderState, build_gpu_hash},
+    shader::build_gpu_hash,
     structs::{GTFSData, GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
     utils::bbox_from_center,
 };
