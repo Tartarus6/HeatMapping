@@ -1,3 +1,7 @@
+//! This is a mapping engine, kind of like the bakend of google maps.
+//!
+//! The engine is provided GTFS data of a region (such as Amsterdam), and will do all of the math behind mapping throughout that region.
+
 use pollster::FutureExt;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -88,6 +92,7 @@ fn main() {
     shader::run(&gtfs_data, &arrival_times, gpu_grid_cells, gpu_grid_stops).block_on();
 }
 
+// TODO: remove this struct, same reason as removing `initialize_gpu_grid()`
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuGridCell {

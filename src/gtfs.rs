@@ -50,6 +50,8 @@ pub fn get_gtfs_data() -> GTFSData {
     return gtfs_data;
 }
 
+/// Save the parsed GTFS data into a file.
+/// This uses the postcard format.
 fn save_gtfs_data(data: &GTFSData, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = postcard::to_allocvec(data)?;
     let mut file = File::create(path)?;
@@ -57,6 +59,8 @@ fn save_gtfs_data(data: &GTFSData, path: &str) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Load previously parsed GTFS data from a file.
+/// This uses the postcard format.
 fn load_gtfs_data(path: &str) -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut file = File::open(path)?;
     let mut buffer = Vec::new();
@@ -67,7 +71,7 @@ fn load_gtfs_data(path: &str) -> Result<GTFSData, Box<dyn std::error::Error>> {
 }
 
 // TODO: make the data smaller where possible (removing unimportant data, maybe making a separate database not in-memory)
-/// reads the gtfs data from the gtfs files and puts them into a GTFSData struct instance
+/// Reads the gtfs files, parsing them into a GTFSData struct instance
 fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     let mut gtfs_data = GTFSData {
         stops: HashMap::new(),
@@ -79,6 +83,7 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
         connections: HashMap::new(),
     };
 
+    // for each gtfs folder
     for directory in get_child_dirs(GTFS_DIRECTORY)? {
         println!("GTFS Directory: {:?}", directory);
 
@@ -307,7 +312,7 @@ fn get<'a>(rec: &'a StringRecord, idx: &HashMap<&str, usize>, name: &str) -> Opt
     idx.get(name).and_then(|&i| rec.get(i))
 }
 
-/// Like `get`, but errors if missing
+/// Like `get()`, but errors if missing
 fn require<'a>(
     rec: &'a StringRecord,
     idx: &HashMap<&str, usize>,
@@ -316,7 +321,7 @@ fn require<'a>(
     get(rec, idx, name).ok_or_else(|| format!("missing required column: {name}").into())
 }
 
-/// get the child directories of a directory
+/// Get the child directories of a directory
 fn get_child_dirs(root: impl AsRef<Path>) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut dirs = Vec::new();
 
