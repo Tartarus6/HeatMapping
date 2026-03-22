@@ -33,9 +33,9 @@ pub fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGri
     let empty = GpuGridCellKey {
         lat: i32::MIN,
         lon: i32::MIN,
-    }; // TODO: huh?
+    };
 
-    let mut keys = vec![empty; cap];
+    let mut keys = vec![empty; cap]; // initialize the vector with dummy values
     let mut vals = vec![GpuGridCellVal { start: 0, count: 0 }; cap];
 
     for cell in cells {
