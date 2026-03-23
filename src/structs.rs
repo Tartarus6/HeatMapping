@@ -80,8 +80,6 @@ pub struct Position {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Stop {
-    pub stop_id: u32,
-    // name: String,
     pub position: Position,
 }
 
@@ -133,14 +131,11 @@ impl RouteType {
 
 #[derive(Serialize, Deserialize)]
 pub struct Route {
-    pub route_id: u32,
     pub route_type: RouteType,
-    pub name: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Trip {
-    pub trip_id: u32,
     pub route_id: u32,
     pub service_id: u32,
     pub stop_times: Vec<StopTime>,
@@ -148,7 +143,6 @@ pub struct Trip {
 
 #[derive(Serialize, Deserialize)]
 pub struct StopTime {
-    pub trip_id: u32,
     pub stop_id: u32,
     /// seconds since midnight (note, can sometimes be greater than 24 hours worth)
     pub arrival_time: u32,
