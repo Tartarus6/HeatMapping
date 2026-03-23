@@ -35,8 +35,19 @@ struct JFAConfig {
     meters_per_px_y: f32, // approximate number of meters per y pixel
 }
 
+struct GpuStop {
+    /// Latitude
+    lat: f32,
+    /// Longitude
+    lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    _pad0: u32,
+}
+
 /// [lat, lon, arrival_time, None]
-@group(0) @binding(0) var<storage, read> grid_stops: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> grid_stops: array<GpuStop>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 @group(0) @binding(2) var out_texture: texture_storage_2d<r32uint, write>;
 @group(0) @binding(3) var<uniform> jfa_config: JFAConfig;
@@ -52,7 +63,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let stop = grid_stops[i];
 
     // stop position (normalized where [0,1] is within bounding box)
-    let stop_uv = (stop.xy - bounding_box_min) / (bounding_box_max - bounding_box_min);
+    let stop_uv = (vec2f(stop.lat, stop.lon) - bounding_box_min) / (bounding_box_max - bounding_box_min);
 
     // TODO: stops some distance around the bounding box should be included, since they might still be the fastest way to somewhere in the bounding box
     // cull stop if not within bounding box

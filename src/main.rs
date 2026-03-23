@@ -3,7 +3,6 @@
 //! The engine is provided GTFS data of a region (such as Amsterdam), and will do all of the math behind mapping throughout that region.
 
 use pollster::FutureExt;
-use std::collections::HashMap;
 use std::time::Instant;
 use std::u32;
 
@@ -78,18 +77,8 @@ fn main() {
     };
     println!("Dijkstra: {}ms\n", now.elapsed().as_millis());
 
-    // Gpu spatial grid initialization
-    let now = Instant::now();
-    let (gpu_grid_cells, gpu_grid_stops) = match initialize_gpu_grid(&gtfs_data, &arrival_times) {
-        Ok(data) => data,
-        Err(err) => {
-            panic!("gpu grid initializing error: {:?}", err);
-        }
-    };
-    println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
-
     // Shader
-    shader::run(&gtfs_data, &arrival_times, gpu_grid_cells, gpu_grid_stops).block_on();
+    shader::run(&gtfs_data, &arrival_times).block_on();
 }
 
 // TODO: remove this struct, same reason as removing `initialize_gpu_grid()`
@@ -100,46 +89,4 @@ struct GpuGridCell {
     lon_index: i32,
     start: u32,
     count: u32,
-}
-
-// TODO: remove this function. purpose is superceeded by ones in shader.rs (will need to refactor those supeceeding functions to use SpatialGrid instead of the output of this function)
-fn initialize_gpu_grid(
-    gtfs_data: &GTFSData,
-    arrival_times: &HashMap<u32, u32>,
-) -> Result<(Vec<GpuGridCell>, Vec<[f32; 4]>), Box<dyn std::error::Error>> {
-    let mut gpu_grid_cells: Vec<GpuGridCell> = Vec::new();
-    let mut gpu_grid_stops: Vec<[f32; 4]> = Vec::new(); // entries are (stop_lat, stop_lon, arrival_time)
-
-    for (&(lat_index, lon_index), stop_ids) in &gtfs_data.grid.map {
-        let start = gpu_grid_stops.len() as u32;
-        let count = stop_ids.len() as u32;
-
-        // add the stop_ids from the cell into the array
-        for stop_id in stop_ids {
-            let stop = gtfs_data
-                .stops
-                .get(&stop_id)
-                .ok_or(format!("stop id not found -> {}", stop_id))?;
-            let arrival_time: &u32 = arrival_times.get(&stop_id).unwrap_or(&u32::MAX); // default to high arrival time if not found
-
-            gpu_grid_stops.push([
-                stop.position.lat as f32,
-                stop.position.lon as f32,
-                *arrival_time as f32,
-                0.0,
-            ]);
-        }
-
-        // add cell as entry into grid cells
-        gpu_grid_cells.push(GpuGridCell {
-            lat_index,
-            lon_index,
-            start,
-            count,
-        });
-    }
-
-    println!("gpu grid cell count: {}", gpu_grid_stops.len());
-
-    Ok((gpu_grid_cells, gpu_grid_stops))
 }

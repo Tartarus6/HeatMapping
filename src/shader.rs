@@ -1,66 +1,78 @@
 // This file contains all of the implementations related to shaders and rendering
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant, u32};
 
 use crate::{
-    GTFSData, GpuGridCell,
+    GTFSData,
     app::App,
-    structs::{GpuGridCellKey, GpuGridCellVal},
-    utils::hash2_i32,
+    structs::{GpuGridCellKey, GpuGridCellVal, GpuStop},
 };
 
 use winit::event_loop::EventLoop;
 
 // TODO: switch to giving shader some kinda spatial grid rather than having it iterate through all stops for every pixel
 // TODO: switch to a multi-stage aproach that first calculates the arrival time to each pixel, then turns that into a heatmap
-/// stop_positions: (latitude, longitude)
-pub async fn run(
-    gtfs_data: &GTFSData,
-    arrival_times: &HashMap<u32, u32>,
-    gpu_grid_cells: Vec<GpuGridCell>,
-    gpu_grid_stops: Vec<[f32; 4]>,
-) {
+/// Main function to run the app and the shaders
+pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>) {
     let event_loop = EventLoop::new().unwrap();
 
-    let mut app = App::new(gtfs_data, arrival_times, gpu_grid_cells, gpu_grid_stops);
+    // Gpu spatial grid initialization
+    let now = Instant::now();
+    // gpu_grid_cell_keys, gpu_grid_cell_vals, and gpu_stops default to empty if hash build fails
+    let (gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops) =
+        build_gpu_hash(gtfs_data, arrival_times).unwrap_or_default();
+    println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
+
+    let mut app = App::new(gtfs_data, gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops);
 
     event_loop.run_app(&mut app).unwrap();
 }
 
-pub fn build_gpu_hash(cells: &[GpuGridCell]) -> (Vec<GpuGridCellKey>, Vec<GpuGridCellVal>) {
-    // TODO: what's the times 2 for?
-    let cap = (cells.len() * 2).next_power_of_two(); // calculate power of 2 size for hash map (to make gpu happy)
-    let empty = GpuGridCellKey {
-        lat: i32::MIN,
-        lon: i32::MIN,
-    };
+/// Constructs 3 arrays for use by the shaders
+///
+/// Vec<GpuStop>: a simple array of the position and arrival time to each stop
+/// Vec<GpuGridCellKey>: lookup keys to identify a spatial grid cell
+/// Vec<GpuGridCellVal>: value tied to key that identifies where in the gpu stop array the cell correlates to
+pub fn build_gpu_hash(
+    gtfs_data: &GTFSData,
+    arrival_times: &HashMap<u32, u32>,
+) -> Result<(Vec<GpuGridCellKey>, Vec<GpuGridCellVal>, Vec<GpuStop>), Box<dyn std::error::Error>> {
+    let mut keys: Vec<GpuGridCellKey> = vec![];
+    let mut vals: Vec<GpuGridCellVal> = vec![];
 
-    let mut keys = vec![empty; cap]; // initialize the vector with dummy values
-    let mut vals = vec![GpuGridCellVal { start: 0, count: 0 }; cap];
+    let mut stops: Vec<GpuStop> = vec![];
 
-    for cell in cells {
-        let key = GpuGridCellKey {
-            lat: cell.lat_index,
-            lon: cell.lon_index,
-        };
-        let val = GpuGridCellVal {
-            start: cell.start,
-            count: cell.count,
-        };
+    for (&(lat_index, lon_index), stop_ids) in &gtfs_data.grid.map {
+        // add key
+        keys.push(GpuGridCellKey {
+            lat_index,
+            lon_index,
+        });
 
-        let mut idx = (hash2_i32(key.lat, key.lon) as usize) & (cap - 1); // TODO: huh?
+        // add value
+        vals.push(GpuGridCellVal {
+            start: vals.len() as u32,
+            count: stop_ids.len() as u32,
+        });
 
-        // TODO: huh?
-        loop {
-            if keys[idx].lat == i32::MIN {
-                keys[idx] = key;
-                vals[idx] = val;
-                break;
-            }
-            // if duplicate key possible, overwrite/merge here
-            idx = (idx + 1) & (cap - 1);
+        // add stops
+        for stop_id in stop_ids {
+            let stop = gtfs_data
+                .stops
+                .get(stop_id)
+                .ok_or(format!("stop id not found -> {}", stop_id))?;
+
+            // default to high arrival_time in case stop was not found to be reachable or something
+            let arrival_time = *arrival_times.get(stop_id).unwrap_or(&u32::MAX);
+
+            stops.push(GpuStop {
+                lat: stop.position.lat,
+                lon: stop.position.lon,
+                arrival_time: arrival_time,
+                _pad0: 0,
+            })
         }
     }
 
-    return (keys, vals);
+    Ok((keys, vals, stops))
 }

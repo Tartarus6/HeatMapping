@@ -24,10 +24,21 @@ struct MinMax {
     max_time: atomic<u32>,
 }
 
+struct GpuStop {
+    /// Latitude
+    lat: f32,
+    /// Longitude
+    lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    _pad0: u32,
+}
+
 @group(0) @binding(0) var jfa_tex: texture_2d<u32>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 @group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
-@group(0) @binding(3) var<storage, read> grid_stops: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> grid_stops: array<GpuStop>;
 @group(0) @binding(4) var<storage, read_write> minmax: MinMax;
 
 // TODO: reduce minmax instability (panning around can lead to some sudden gradient changes)
@@ -49,8 +60,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     best_stop_index -= 1u;
     let best_stop = grid_stops[best_stop_index];
 
-    let u = (best_stop.y - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
-    let v = 1.0 - (best_stop.x - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
+    let u = (best_stop.lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
+    let v = 1.0 - (best_stop.lat - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
     let best_stop_pixel = vec2i(vec2f(u, v) * vec2f(jfa_config.jfa_width, jfa_config.jfa_height));
 
     let dist = length(vec2f(best_stop_pixel - vec2i(xy)) * vec2f(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y));
@@ -61,7 +72,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let walk_s = u32(dist * config.inverse_walk_speed_mps);
-    let arrival = u32(best_stop.z) + walk_s;
+    let arrival = u32(best_stop.arrival_time) + walk_s;
 
     atomicMin(&minmax.min_time, arrival);
     atomicMax(&minmax.max_time, arrival);

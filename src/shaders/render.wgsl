@@ -29,6 +29,17 @@ struct MinMax {
     max_time: atomic<u32>,
 };
 
+struct GpuStop {
+    /// Latitude
+    lat: f32,
+    /// Longitude
+    lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    _pad0: u32,
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
     // Fullscreen triangle
@@ -54,7 +65,7 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
 @group(0) @binding(0) var jfa_tex: texture_2d<u32>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 @group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
-@group(0) @binding(3) var<storage, read> grid_stops: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> grid_stops: array<GpuStop>;
 @group(0) @binding(4) var<storage, read> minmax: MinMax;
 
 /// color (in oklch) of the earliest arrival_times
@@ -91,8 +102,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         let best_stop = grid_stops[best_stop_index];
 
         // normalize candidate stop position vec2f([0,1], [0,1])
-        let u: f32 = (best_stop.y - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
-        let v: f32 = 1.0 - (best_stop.x - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
+        let u: f32 = (best_stop.lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
+        let v: f32 = 1.0 - (best_stop.lat - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
         let best_stop_norm: vec2f = vec2f(u, v);
 
         // get candidate stop pixel vec2i(x, y)
@@ -106,7 +117,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         let walk_s = u32(dist * config.inverse_walk_speed_mps);
 
         // arrival time if walking from candidate pixel to current pixel
-        arrival_time = u32(best_stop.z) + walk_s;
+        arrival_time = best_stop.arrival_time + walk_s;
     }
 
     // convert arrival time into [0,1] based on max_time

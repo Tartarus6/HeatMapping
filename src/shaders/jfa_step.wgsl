@@ -19,11 +19,22 @@ struct JFAConfig {
     meters_per_px_y: f32, // approximate number of meters per y pixel
 }
 
+struct GpuStop {
+    /// Latitude
+    lat: f32,
+    /// Longitude
+    lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    _pad0: u32,
+}
+
 @group(0) @binding(0) var prev_texture: texture_storage_2d<r32uint, read>;  // read-only
 @group(0) @binding(1) var next_texture: texture_storage_2d<r32uint, write>; // write-only
 @group(0) @binding(2) var<uniform> config: ShaderConfig;
 @group(0) @binding(3) var<uniform> jfa_config: JFAConfig;
-@group(0) @binding(4) var<storage, read> grid_stops: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> grid_stops: array<GpuStop>;
 
 const HALF_SQRT_2: f32 = 0.707106781;
 
@@ -74,8 +85,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let candidate_stop = grid_stops[candidate_stop_index];
 
             // normalize candidate stop position vec2f([0,1], [0,1])
-            let u: f32 = (candidate_stop.y - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
-            let v: f32 = 1.0 - (candidate_stop.x - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
+            let u: f32 = (candidate_stop.lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
+            let v: f32 = 1.0 - (candidate_stop.lat - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
             let candidate_stop_norm: vec2f = vec2f(u, v);
             // get candidate stop pixel vec2i(x, y)
             let candidate_stop_pixel: vec2i = vec2i(candidate_stop_norm * vec2f(jfa_config.jfa_width, jfa_config.jfa_height));
@@ -88,7 +99,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let walk_s = dist * config.inverse_walk_speed_mps;
 
             // arrival time if walking from candidate pixel to current pixel
-            let total: f32 = candidate_stop.z + walk_s;
+            let total: f32 = f32(candidate_stop.arrival_time) + walk_s;
 
             // update best arrival time if new path is better
             if total < f32(best_arrival_time) {
