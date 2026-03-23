@@ -41,18 +41,6 @@ impl App {
         gpu_grid_cell_vals: Vec<GpuGridCellVal>,
         gpu_stops: Vec<GpuStop>,
     ) -> Self {
-        // derive image dimensions from the bounding box aspect ratio
-        // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
-        // let mid_lat = (bbox_min_position.lat + bbox_max_position.lat) / 2.0;
-        // let physical_width = (bbox_max_position.lon - bbox_min_position.lon) * mid_lat.cos();
-        // let physical_height = bbox_max_position.lat - bbox_min_position.lat;
-        // let aspect_ratio = physical_width / physical_height;
-        // let (pixels_width, pixels_height) = if aspect_ratio >= 1.0 {
-        //     (MAX_DIM, (MAX_DIM as f64 / aspect_ratio) as u32)
-        // } else {
-        //     ((MAX_DIM as f64 * aspect_ratio) as u32, MAX_DIM)
-        // };
-
         let begin_time = DEPART_INSTANT.time;
 
         let shader_config = ShaderConfig {
@@ -67,12 +55,6 @@ impl App {
             max_walk_transfer_distance: MAX_WALK_TRANSFER_DISTANCE as f32,
             inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
         };
-
-        // let jfa_width = max(1, pixels_width / JFA_SCALE);
-        // let jfa_height = max(1, pixels_height / JFA_SCALE);
-
-        // let meters_per_pixel =
-        //     meters_per_pixel(bbox_min_position, bbox_max_position, jfa_width, jfa_height);
 
         let jfa_config = JFAConfig {
             jfa_width: 0.0,       // dummy init value (will be overwritten)

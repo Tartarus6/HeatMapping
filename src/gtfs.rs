@@ -7,8 +7,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::CACHE_DIRECTORY;
-use crate::utils::str_to_u32_hash;
+use crate::utils::{haversine_distance, str_to_u32_hash};
+use crate::{CACHE_DIRECTORY, DEPART_INSTANT};
 use crate::{
     GTFS_DIRECTORY, MAX_WALK_TRANSFER_DISTANCE,
     structs::{
@@ -22,9 +22,12 @@ use crate::{
 /// If a cache is present, it'll just use the cache,
 /// otherwise, the GTFS files are parsed.
 pub fn get_gtfs_data() -> GTFSData {
-    let gtfs_data = match load_gtfs_data("cache/gtfs_data") {
+    let gtfs_data = match get_culled_gtfs_data(match load_gtfs_data("cache/gtfs_data") {
         // try loading from cache if possible
-        Ok(data) => data,
+        Ok(data) => {
+            println!("Cache found - using cached GTFS data...");
+            data
+        }
         Err(_) => {
             println!("Cache not found - parsing GTFS data...");
 
@@ -45,6 +48,9 @@ pub fn get_gtfs_data() -> GTFSData {
 
             data // return that data
         }
+    }) {
+        Ok(data) => data,
+        Err(err) => panic!("error culling gtfs data: {:?}", err),
     };
 
     return gtfs_data;
@@ -216,35 +222,6 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 .insert((service_id, date), exception_type);
         }
         println!("Loaded {} services", gtfs_data.services.len());
-
-        // transfers
-        let file = File::open(directory.join("transfers.txt"))?;
-        let mut reader = Reader::from_reader(file);
-
-        let headers = reader.headers()?.clone();
-        let idx = header_index(&headers);
-
-        for result in reader.records() {
-            let record = result?;
-
-            let from_stop_id: u32 = parse_stop_id(require(&record, &idx, "from_stop_id")?)?;
-
-            gtfs_data
-                .transfers
-                .entry(from_stop_id)
-                .or_insert_with(Vec::new)
-                .push(Transfer {
-                    from_stop_id: from_stop_id,
-                    to_stop_id: parse_stop_id(require(&record, &idx, "to_stop_id")?)?,
-                    // TODO: is the GTFS standard format for min_transfer_time in seconds already, or does it need to be converted?
-                    min_transfer_time: require(&record, &idx, "min_transfer_time")
-                        .unwrap_or_default()
-                        .parse()
-                        .unwrap_or(0), // default to 0 if not declared
-                });
-        }
-
-        println!();
     }
 
     // Transfers Post-Parse
@@ -259,6 +236,13 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 .stops
                 .get(&to_stop_id)
                 .ok_or("to stop not in stops")?;
+
+            // if stops are more than MAX_WALK_TRANSFER_DISTANCE apart, skip
+            if haversine_distance(from_stop.position, to_stop.position) > MAX_WALK_TRANSFER_DISTANCE
+            {
+                continue;
+            }
+
             gtfs_data
                 .transfers
                 .entry(from_stop.stop_id)
@@ -302,6 +286,87 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
     println!("Loaded {} connections", connection_count);
 
     Ok(gtfs_data)
+}
+
+/// Returns a culled subset of the GTFS data based on departure day
+/// Culled data includes only the stuff needed to run the app
+///
+/// The following fields are emptied
+///  - `routes`
+///  - `trips`
+///  - `services`
+///
+/// The following fields are culled to only include the elements on the day of departure
+///  - `connections`
+///
+/// Other fields are left as-is
+pub fn get_culled_gtfs_data(gtfs_data: GTFSData) -> Result<GTFSData, Box<dyn std::error::Error>> {
+    // get culled connections
+    let culled_connections = get_culled_connections(&gtfs_data)?;
+
+    let culled_gtfs_data = GTFSData {
+        stops: gtfs_data.stops,
+        grid: gtfs_data.grid,
+        routes: HashMap::new(),
+        trips: HashMap::new(),
+        services: HashMap::new(),
+        transfers: gtfs_data.transfers,
+        connections: culled_connections,
+    };
+
+    Ok(culled_gtfs_data)
+}
+
+// TODO: switch to using binary search instead of iterating through until it's found
+// TODO: add an upper bound cull as well (currently only connections before the time of departure are culled)
+// TODO: add ability to ignore certain transport types (i.e. only no-busses routes)
+/// returns a connections hash map with any entries that depart before `min_time` culled
+pub fn get_culled_connections(
+    gtfs_data: &GTFSData,
+) -> Result<HashMap<u32, Vec<Connection>>, Box<dyn std::error::Error>> {
+    let mut culled_connections_map: HashMap<u32, Vec<Connection>> = HashMap::new();
+
+    for connections in gtfs_data.connections.values() {
+        for connection in connections {
+            // TODO: add an upper bound cull as well (currently only connections before the time of departure are culled)
+            // if departure_time already passed, skip it
+            if connection.departure_time < DEPART_INSTANT.time {
+                continue;
+            }
+
+            // TODO: this service exception type check is really slow i think, gotta speed this up (i think it alone is adding 4 seconds of compute)
+            let service_exception_type = gtfs_data
+                .services
+                .get(&(
+                    gtfs_data
+                        .trips
+                        .get(&connection.trip_id)
+                        .ok_or("trip not found (non-fatal)")?
+                        .service_id,
+                    DEPART_INSTANT.date,
+                ))
+                .ok_or("service not found (non-fatal)");
+
+            // if connection not in service today, skip it
+            match service_exception_type {
+                Ok(value) => {
+                    if *value != ServiceExceptionType::ServiceAdded {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
+
+            culled_connections_map
+                .entry(connection.from_stop_id)
+                .or_insert_with(Vec::new)
+                .push(*connection);
+        }
+    }
+
+    println!("Loaded {} culled connections", culled_connections_map.len());
+
+    Ok(culled_connections_map)
 }
 
 fn header_index(headers: &StringRecord) -> HashMap<&str, usize> {

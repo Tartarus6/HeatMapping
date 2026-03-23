@@ -5,11 +5,7 @@ use std::{
     collections::{BinaryHeap, HashMap},
 };
 
-use crate::{
-    DEPART_INSTANT,
-    structs::{Connection, GTFSData, ServiceExceptionType},
-    utils::get_walk_time,
-};
+use crate::{DEPART_INSTANT, structs::GTFSData, utils::get_walk_time};
 
 // TODO: is there a way to reuse the data from other dijkstra runs, rather than having to totally recalculate for each different starting position?
 // TODO: (maybe) optimize by finding "hub nodes", and precomputing the travel times between them. then using that hub-to-hub time as an offset to prevent the need to calculate paths across hubs
@@ -20,14 +16,6 @@ pub fn initialize_dijkstra(
     gtfs_data: &GTFSData,
 ) -> Result<HashMap<u32, u32>, Box<dyn std::error::Error>> {
     let mut arrival_times: HashMap<u32, u32> = HashMap::new(); // <to_stop_id, arrival_time>
-
-    // get culled connections list, removing any entries that occured before the depart instant (max time not used, so set to u32::MAX)
-    let culled_connections = get_culled_connections(
-        DEPART_INSTANT.time,
-        u32::MAX,
-        &gtfs_data.connections,
-        &gtfs_data,
-    )?;
 
     let mut priority_queue: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // Min-heap (priority queue) storing pairs of (arrival_time, stop_id)
 
@@ -62,7 +50,11 @@ pub fn initialize_dijkstra(
 
         // explore all trip connections of the current stop
         // default to empty array if no connections
-        for connection in culled_connections.get(&current_stop_id).unwrap_or(&vec![]) {
+        for connection in gtfs_data
+            .connections
+            .get(&current_stop_id)
+            .unwrap_or(&vec![])
+        {
             // TODO: switch to using binary search instead of iterating through until it's found
 
             // if departure_time already passed, skip it
@@ -105,61 +97,4 @@ pub fn initialize_dijkstra(
     }
 
     Ok(arrival_times)
-}
-
-// TODO: switch to using binary search instead of iterating through until it's found
-// TODO: add ability to ignore certain transport types (i.e. only no-busses routes)
-/// returns a connections hash map with any entries that depart before `min_time` culled
-pub fn get_culled_connections(
-    min_time: u32,
-    max_time: u32,
-    connections_map: &HashMap<u32, Vec<Connection>>,
-    gtfs_data: &GTFSData,
-) -> Result<HashMap<u32, Vec<Connection>>, Box<dyn std::error::Error>> {
-    println!("min_time: {}", min_time);
-    println!("max_time: {}", max_time);
-
-    let mut culled_connections_map: HashMap<u32, Vec<Connection>> = HashMap::new();
-
-    for (_, connections) in connections_map {
-        for connection in connections {
-            // if departure_time already passed, skip it
-            // or if arrival_time is too late, skip it
-            if connection.departure_time < min_time || connection.arrival_time > max_time {
-                continue;
-            }
-
-            // TODO: this service exception type check is really slow i think, gotta speed this up (i think it alone is adding 4 seconds of compute)
-            let service_exception_type = gtfs_data
-                .services
-                .get(&(
-                    gtfs_data
-                        .trips
-                        .get(&connection.trip_id)
-                        .ok_or("trip not found (non-fatal)")?
-                        .service_id,
-                    DEPART_INSTANT.date,
-                ))
-                .ok_or("service not found (non-fatal)");
-
-            // if connection not in service today, skip it
-            match service_exception_type {
-                Ok(value) => {
-                    if *value != ServiceExceptionType::ServiceAdded {
-                        continue;
-                    }
-                }
-                Err(_) => continue,
-            }
-
-            culled_connections_map
-                .entry(connection.from_stop_id)
-                .or_insert_with(Vec::new)
-                .push(*connection);
-        }
-    }
-
-    println!("Loaded {} culled connections", culled_connections_map.len());
-
-    Ok(culled_connections_map)
 }
