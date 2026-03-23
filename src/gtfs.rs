@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::utils::str_to_u32_hash;
+use crate::utils::{haversine_distance, str_to_u32_hash};
 use crate::{CACHE_DIRECTORY, DEPART_INSTANT};
 use crate::{
     GTFS_DIRECTORY, MAX_WALK_TRANSFER_DISTANCE,
@@ -222,35 +222,6 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 .insert((service_id, date), exception_type);
         }
         println!("Loaded {} services", gtfs_data.services.len());
-
-        // transfers
-        let file = File::open(directory.join("transfers.txt"))?;
-        let mut reader = Reader::from_reader(file);
-
-        let headers = reader.headers()?.clone();
-        let idx = header_index(&headers);
-
-        for result in reader.records() {
-            let record = result?;
-
-            let from_stop_id: u32 = parse_stop_id(require(&record, &idx, "from_stop_id")?)?;
-
-            gtfs_data
-                .transfers
-                .entry(from_stop_id)
-                .or_insert_with(Vec::new)
-                .push(Transfer {
-                    from_stop_id: from_stop_id,
-                    to_stop_id: parse_stop_id(require(&record, &idx, "to_stop_id")?)?,
-                    // TODO: is the GTFS standard format for min_transfer_time in seconds already, or does it need to be converted?
-                    min_transfer_time: require(&record, &idx, "min_transfer_time")
-                        .unwrap_or_default()
-                        .parse()
-                        .unwrap_or(0), // default to 0 if not declared
-                });
-        }
-
-        println!();
     }
 
     // Transfers Post-Parse
@@ -265,6 +236,13 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 .stops
                 .get(&to_stop_id)
                 .ok_or("to stop not in stops")?;
+
+            // if stops are more than MAX_WALK_TRANSFER_DISTANCE apart, skip
+            if haversine_distance(from_stop.position, to_stop.position) > MAX_WALK_TRANSFER_DISTANCE
+            {
+                continue;
+            }
+
             gtfs_data
                 .transfers
                 .entry(from_stop.stop_id)
