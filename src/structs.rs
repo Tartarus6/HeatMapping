@@ -232,18 +232,39 @@ pub struct GTFSData {
 }
 
 // --- Shader Structs ---
+/// Used as a key to find a `GpuGridCellVal`
+/// Each spatial grid cell has a unique `GpuGridCellKey` value
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGridCellKey {
-    pub lat: i32,
-    pub lon: i32,
+    /// latitude cell index
+    pub lat_index: i32,
+    /// longitude cell index
+    pub lon_index: i32,
+}
+
+/// Found using `GpuGridCellKey`
+/// Used to find the portion of the GpuStop array that corresponds to this specific spatial grid cell
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuGridCellVal {
+    /// Defines the starting index of the GpuStop array that corresponds to this spatial grid cell
+    pub start: u32,
+    /// Defines how many indeces of the GpuStop array are part of this spatial grid cell
+    pub count: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GpuGridCellVal {
-    pub start: u32,
-    pub count: u32,
+pub struct GpuStop {
+    /// Latitude
+    pub lat: f32,
+    /// Longitude
+    pub lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    pub arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    pub _pad0: u32,
 }
 
 // TODO: switch width, height, begin_time, and max_time to be u32
@@ -272,13 +293,6 @@ pub struct JFAConfig {
     pub meters_per_px_x: f32, // approximate number of meters per x pixel
     pub meters_per_px_y: f32, // approximate number of meters per y pixel
 }
-
-// #[repr(C)]
-// #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-// pub struct MinMax {
-//     pub min_time: atomic<u32>,
-//     pub max_time: atomic<u32>,
-// }
 
 /// parses stop_id, handling both "600737" and "stoparea:600737" formats
 pub fn parse_stop_id(stop_id_str: &str) -> Result<u32, Box<dyn std::error::Error>> {

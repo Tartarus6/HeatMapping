@@ -1,5 +1,5 @@
 use std::cmp::max;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -8,11 +8,10 @@ use winit::{application::ApplicationHandler, event_loop::ActiveEventLoop, window
 
 use crate::MAX_WALK_TRANSFER_DISTANCE;
 use crate::render_state::RenderState;
-use crate::structs::Position;
+use crate::structs::{GpuStop, Position};
 use crate::utils::meters_per_pixel;
 use crate::{
-    DEPART_INSTANT, GpuGridCell, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, WALKING_SPEED,
-    shader::build_gpu_hash,
+    DEPART_INSTANT, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, WALKING_SPEED,
     structs::{GTFSData, GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
     utils::bbox_from_center,
 };
@@ -22,7 +21,7 @@ pub struct App {
     // Pre-init data
     gpu_grid_cell_keys: Vec<GpuGridCellKey>,
     gpu_grid_cell_vals: Vec<GpuGridCellVal>,
-    gpu_grid_stops: Vec<[f32; 4]>,
+    gpu_stops: Vec<GpuStop>,
     shader_config: ShaderConfig,
     jfa_config: JFAConfig,
 
@@ -38,9 +37,9 @@ pub struct App {
 impl App {
     pub fn new(
         gtfs_data: &GTFSData,
-        arrival_times: &HashMap<u32, u32>,
-        gpu_grid_cells: Vec<GpuGridCell>,
-        gpu_grid_stops: Vec<[f32; 4]>,
+        gpu_grid_cell_keys: Vec<GpuGridCellKey>,
+        gpu_grid_cell_vals: Vec<GpuGridCellVal>,
+        gpu_stops: Vec<GpuStop>,
     ) -> Self {
         // derive image dimensions from the bounding box aspect ratio
         // longitude degrees are physically shorter at higher latitudes, scale by cos(mid_lat)
@@ -83,12 +82,10 @@ impl App {
             meters_per_px_y: 0.0, // dummy init value (will be overwritten)
         };
 
-        let (gpu_grid_cell_keys, gpu_grid_cell_vals) = build_gpu_hash(&gpu_grid_cells);
-
         Self {
             gpu_grid_cell_keys,
             gpu_grid_cell_vals,
-            gpu_grid_stops,
+            gpu_stops,
             shader_config,
             jfa_config,
             window: None,
@@ -135,7 +132,7 @@ impl ApplicationHandler for App {
             window.clone(),
             &self.gpu_grid_cell_keys,
             &self.gpu_grid_cell_vals,
-            &self.gpu_grid_stops,
+            &self.gpu_stops,
             self.shader_config,
             self.jfa_config,
         ));

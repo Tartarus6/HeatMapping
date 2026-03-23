@@ -3,14 +3,14 @@ use tracing::{info_span, instrument};
 use wgpu::{BufferUsages, Device, util::DeviceExt};
 use winit::window::Window;
 
-use crate::structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig};
+use crate::structs::{GpuGridCellKey, GpuGridCellVal, GpuStop, JFAConfig, ShaderConfig};
 
 const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 // TODO: add a scale reference (like google maps has) showing how zoomed in the view is
 
 pub struct Buffers {
-    pub gpu_grid_stops_buffer: wgpu::Buffer,
+    pub gpu_stops_buffer: wgpu::Buffer,
     pub minmax_buffer: wgpu::Buffer,
 
     pub shader_config_buffer: wgpu::Buffer,
@@ -348,7 +348,7 @@ impl RenderState {
         window: Arc<Window>,
         gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
         gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
-        gpu_grid_stops: &Vec<[f32; 4]>,
+        gpu_stops: &Vec<GpuStop>,
         shader_config: ShaderConfig,
         jfa_config: JFAConfig,
     ) -> Self {
@@ -407,7 +407,7 @@ impl RenderState {
             &device,
             gpu_grid_cell_keys,
             gpu_grid_cell_vals,
-            gpu_grid_stops,
+            gpu_stops,
             shader_config,
             jfa_config,
         );
@@ -424,7 +424,7 @@ impl RenderState {
             queue,
             config,
 
-            num_stops: gpu_grid_stops.len() as u32,
+            num_stops: gpu_stops.len() as u32,
 
             shader_config,
 
@@ -464,7 +464,7 @@ pub fn initialize_buffers(
     device: &Device,
     gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
     gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
-    gpu_grid_stops: &Vec<[f32; 4]>,
+    gpu_stops: &Vec<GpuStop>,
     shader_config: ShaderConfig,
     jfa_config: JFAConfig,
 ) -> Buffers {
@@ -483,9 +483,9 @@ pub fn initialize_buffers(
         usage: BufferUsages::STORAGE,
     });
 
-    let gpu_grid_stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let gpu_stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("GPU Grid Stops Buffer"),
-        contents: bytemuck::cast_slice(&gpu_grid_stops),
+        contents: bytemuck::cast_slice(&gpu_stops),
         usage: BufferUsages::STORAGE,
     });
 
@@ -556,7 +556,7 @@ pub fn initialize_buffers(
     });
 
     return Buffers {
-        gpu_grid_stops_buffer,
+        gpu_stops_buffer,
         minmax_buffer,
 
         shader_config_buffer,
@@ -932,7 +932,7 @@ pub fn initialize_shader_resources(
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                resource: buffers.gpu_stops_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
@@ -996,7 +996,7 @@ pub fn initialize_shader_resources(
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -1037,7 +1037,7 @@ pub fn initialize_shader_resources(
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
             ],
         }),
@@ -1063,7 +1063,7 @@ pub fn initialize_shader_resources(
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
             ],
         }),
@@ -1088,7 +1088,7 @@ pub fn initialize_shader_resources(
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1114,7 +1114,7 @@ pub fn initialize_shader_resources(
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1143,7 +1143,7 @@ pub fn initialize_shader_resources(
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1169,7 +1169,7 @@ pub fn initialize_shader_resources(
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1214,7 +1214,7 @@ impl ShaderResources {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -1253,7 +1253,7 @@ impl ShaderResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1280,7 +1280,7 @@ impl ShaderResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1303,7 +1303,7 @@ impl ShaderResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1330,7 +1330,7 @@ impl ShaderResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1357,7 +1357,7 @@ impl ShaderResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -1384,7 +1384,7 @@ impl ShaderResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.gpu_grid_stops_buffer.as_entire_binding(),
+                    resource: buffers.gpu_stops_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,

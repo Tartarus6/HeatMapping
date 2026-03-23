@@ -19,8 +19,19 @@ struct JFAConfig {
     meters_per_px_y: f32,
 }
 
+struct GpuStop {
+    /// Latitude
+    lat: f32,
+    /// Longitude
+    lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    _pad0: u32,
+}
+
 // [lat, lon, arrival_time, _]
-@group(0) @binding(0) var<storage, read> grid_stops: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> grid_stops: array<GpuStop>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 @group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
 
@@ -50,12 +61,10 @@ fn vs_main(
     );
 
     let stop = grid_stops[iid];
-    let lat = stop.x;
-    let lon = stop.y;
 
     // cull stop if not within bounding box
-    if lat < config.bbox_min_lat || lat > config.bbox_max_lat ||
-        lon < config.bbox_min_lon || lon > config.bbox_max_lon {
+    if stop.lat < config.bbox_min_lat || stop.lat > config.bbox_max_lat ||
+        stop.lon < config.bbox_min_lon || stop.lon > config.bbox_max_lon {
         var o: VsOut;
         o.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0); // outside clip
         o.local = vec2<f32>(0.0, 0.0);
@@ -63,8 +72,8 @@ fn vs_main(
     }
 
     // world -> uv
-    let u = (lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
-    let v = (config.bbox_max_lat - lat) / (config.bbox_max_lat - config.bbox_min_lat);
+    let u = (stop.lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
+    let v = (config.bbox_max_lat - stop.lat) / (config.bbox_max_lat - config.bbox_min_lat);
 
     // uv -> pixel
     let x_px = u * config.width;
