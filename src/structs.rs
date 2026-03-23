@@ -176,20 +176,20 @@ impl Date {
     }
 }
 
+/// Note: `from_stop_id` is not declared, since it's used as the key in the `connections` HashMap
 #[derive(Serialize, Deserialize)]
 pub struct Transfer {
-    pub from_stop_id: u32,
     pub to_stop_id: u32,
     /// (in seconds)
     pub min_transfer_time: u32,
 }
 
+/// Note: `from_stop_id` is not declared, since it's used as the key in the `connections` HashMap
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Connection {
-    pub from_stop_id: u32,
     pub to_stop_id: u32,
-    /// id of parent trip
-    pub trip_id: u32,
+    /// service id of parent trip
+    pub service_id: u32,
     /// time when arriving at destination (neighbor) stop (in seconds since midnight)
     pub arrival_time: u32,
     /// time when departing towards (neighbor) stop (in seconds since midnight)
