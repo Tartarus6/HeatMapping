@@ -176,9 +176,7 @@ impl RenderState {
                     log2(max(self.jfa_config.jfa_width, self.jfa_config.jfa_height)) + 2,
                     self.buffers.jfa_jump_count,
                 );
-                for jump_size_index in
-                    self.buffers.jfa_jump_count - jump_size_range..self.buffers.jfa_jump_count
-                {
+                for jump_size_index in (0..jump_size_range).rev() {
                     // Copy one f32 jump value into ShaderConfig.jump_size
                     let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
                     encoder.copy_buffer_to_buffer(
@@ -560,16 +558,15 @@ pub fn initialize_buffers(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // TODO: this needs to dynamically change with screen size
     // Build jump sequence: 1, 1, 2, 4, ..., 4096, ..., JUMP_MAX
     let mut jumps: Vec<u32> = Vec::new();
-    let mut j: u32 = JUMP_MAX;
+    let mut j: u32 = 1;
 
-    while j >= 1 {
-        jumps.push(j);
-        j /= 2;
-    }
     jumps.push(1); // add an extra jump of distance 1 in order to improve output stability
+    while j <= JUMP_MAX {
+        jumps.push(j);
+        j *= 2;
+    }
 
     let jfa_jump_values_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("JFA Jump Values Buffer"),
