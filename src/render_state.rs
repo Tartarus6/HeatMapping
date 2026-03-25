@@ -89,12 +89,17 @@ impl RenderState {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let output = self.surface.get_current_texture()?;
 
+        // TODO: delegate clearing buffers for the new frame (and maybe also texture) into a dedicated function
+
         // TODO: switch to using a shader to clear the texture, it's faster i think
-        // clear texture_a for new frame
+        // Clear texture_a for new frame
         encoder.clear_texture(
             &self.shader_resources.jfa_texture_a,
             &wgpu::ImageSubresourceRange::default(),
         );
+
+        // Clear seeds_buffer for new frame
+        encoder.clear_buffer(&self.buffers.seeds_buffer, 0, None);
 
         {
             // JFA Seed Pass
@@ -1332,6 +1337,7 @@ impl ShaderResources {
         self.jfa_texture_a_view = jfa_texture_a_view;
         self.jfa_texture_b_view = jfa_texture_b_view;
 
+        // Recreate seeds buffer with new size
         let jfa_pixel_count: usize =
             (jfa_config.jfa_width as usize) * (jfa_config.jfa_height as usize);
         let seeds_init: Vec<u32> = vec![u32::MAX; jfa_pixel_count];

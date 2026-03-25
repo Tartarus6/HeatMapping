@@ -16,8 +16,6 @@ struct JFAConfig {
 @group(0) @binding(1) var out_texture: texture_storage_2d<r32uint, write>;
 @group(0) @binding(2) var<storage, read_write> seeds: array<u32>;
 
-const u32_max: u32 = 0xFFFFFFFF;
-
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -27,7 +25,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let seed = seeds[i];
 
-    if seed == u32_max {
+    if seed == 0 {
         return;
     }
 

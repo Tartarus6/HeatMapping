@@ -51,8 +51,6 @@ struct GpuStop {
 @group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
 @group(0) @binding(3) var<storage, read_write> seeds: array<atomic<u32>>;
 
-const EMPTY: u32 = 0xFFFFFFFFu;
-
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -101,8 +99,8 @@ fn try_claim(pixel_i: u32, my_idx1: u32) {
     loop {
         let cur = atomicLoad(&seeds[pixel_i]);
 
-        if cur == EMPTY {
-            let r = atomicCompareExchangeWeak(&seeds[pixel_i], EMPTY, my_idx1);
+        if cur == 0 {
+            let r = atomicCompareExchangeWeak(&seeds[pixel_i], 0, my_idx1);
             if r.exchanged { break; }
             continue;
         }
