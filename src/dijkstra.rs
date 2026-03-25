@@ -27,8 +27,8 @@ pub fn initialize_dijkstra(
             .ok_or("walking to stop didnt exist")?;
         let arrival_time =
             DEPART_INSTANT.time + get_walk_time(DEPART_INSTANT.position, stop.position);
-        arrival_times.insert(stop.stop_id, arrival_time);
-        priority_queue.push(Reverse((arrival_time, stop.stop_id))); // push the starting stop onto the priority queue
+        arrival_times.insert(stop_id, arrival_time);
+        priority_queue.push(Reverse((arrival_time, stop_id))); // push the starting stop onto the priority queue
     }
 
     // process the queue until all reachable stops are finalized

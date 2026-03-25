@@ -34,7 +34,7 @@ pub fn get_gtfs_data() -> GTFSData {
             // if couldnt load gtfs data from cache, parse from gtfs files
             let data = match parse_data() {
                 Ok(data) => data,
-                Err(err) => panic!("error parsing gtfs data: {:?}", err),
+                Err(err) => panic!("error parsing GTFS data: {:?}", err),
             };
 
             // save that parsed data into the cache
@@ -42,15 +42,15 @@ pub fn get_gtfs_data() -> GTFSData {
                 &data,
                 format!("{}{}", CACHE_DIRECTORY, "gtfs_data").as_str(),
             ) {
-                Ok(()) => (),
-                Err(err) => panic!("error saving gtfs data: {:?}", err),
+                Ok(()) => println!("Saved GTFS data in cache file"),
+                Err(err) => panic!("error saving GTFS data: {:?}", err),
             };
 
             data // return that data
         }
     }) {
         Ok(data) => data,
-        Err(err) => panic!("error culling gtfs data: {:?}", err),
+        Err(err) => panic!("error culling GTFS data: {:?}", err),
     };
 
     return gtfs_data;
@@ -114,7 +114,7 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                     .to_radians(),
             };
 
-            gtfs_data.stops.insert(stop_id, Stop { stop_id, position });
+            gtfs_data.stops.insert(stop_id, Stop { position });
             gtfs_data.grid.insert(position, stop_id);
         }
         println!("Loaded {} stops", gtfs_data.stops.len());
@@ -134,14 +134,9 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
             gtfs_data.routes.insert(
                 route_id,
                 Route {
-                    route_id,
                     route_type: RouteType::parse_route_type(
                         require(&record, &idx, "route_type")?.parse()?,
                     ),
-                    name: get(&record, &idx, "route_long_name")
-                        .or_else(|| get(&record, &idx, "route_short_name"))
-                        .unwrap_or("")
-                        .to_string(),
                 },
             );
         }
@@ -162,7 +157,6 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
             gtfs_data.trips.insert(
                 trip_id,
                 Trip {
-                    trip_id,
                     route_id: parse_route_id(require(&record, &idx, "route_id")?)?,
                     service_id: str_to_u32_hash(require(&record, &idx, "service_id")?),
                     stop_times: vec![],
@@ -189,7 +183,6 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 .ok_or("stop time trip didn't exist")?;
 
             trip.stop_times.push(StopTime {
-                trip_id,
                 stop_id: parse_stop_id(require(&record, &idx, "stop_id")?)?,
                 arrival_time: str_time_to_seconds(require(&record, &idx, "arrival_time")?)?,
                 departure_time: str_time_to_seconds(require(&record, &idx, "departure_time")?)?,
@@ -222,14 +215,16 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 .insert((service_id, date), exception_type);
         }
         println!("Loaded {} services", gtfs_data.services.len());
+
+        println!();
     }
 
     // Transfers Post-Parse
-    for from_stop in gtfs_data.stops.values() {
+    for (stop_id, from_stop) in gtfs_data.stops.iter() {
         let culled_stops = gtfs_data.grid.get_nearby(from_stop.position);
 
         for to_stop_id in culled_stops {
-            if from_stop.stop_id == to_stop_id {
+            if *stop_id == to_stop_id {
                 continue;
             }
             let to_stop = gtfs_data
@@ -245,11 +240,10 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
 
             gtfs_data
                 .transfers
-                .entry(from_stop.stop_id)
+                .entry(*stop_id)
                 .or_insert_with(Vec::new)
                 .push(Transfer {
-                    from_stop_id: from_stop.stop_id,
-                    to_stop_id: to_stop.stop_id,
+                    to_stop_id: to_stop_id,
                     min_transfer_time: get_walk_time(from_stop.position, to_stop.position),
                 });
         }
@@ -258,7 +252,7 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
 
     // Connections Post-Parse
     let mut connection_count: u32 = 0;
-    for (_, trip) in gtfs_data.trips.iter_mut() {
+    for trip in gtfs_data.trips.values_mut() {
         // sort stop times to be in order
         trip.stop_times
             .sort_by(|a, b| a.departure_time.cmp(&b.departure_time));
@@ -274,9 +268,8 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
                 .entry(from_stop_id)
                 .or_insert_with(Vec::new)
                 .push(Connection {
-                    from_stop_id: from_stop_id,
                     to_stop_id: trip.stop_times[i + 1].stop_id,
-                    trip_id: trip.trip_id,
+                    service_id: trip.service_id,
                     arrival_time: trip.stop_times[i + 1].arrival_time,
                     departure_time: trip.stop_times[i].departure_time,
                 });
@@ -326,7 +319,7 @@ pub fn get_culled_connections(
 ) -> Result<HashMap<u32, Vec<Connection>>, Box<dyn std::error::Error>> {
     let mut culled_connections_map: HashMap<u32, Vec<Connection>> = HashMap::new();
 
-    for connections in gtfs_data.connections.values() {
+    for (from_stop_id, connections) in gtfs_data.connections.iter() {
         for connection in connections {
             // TODO: add an upper bound cull as well (currently only connections before the time of departure are culled)
             // if departure_time already passed, skip it
@@ -334,17 +327,9 @@ pub fn get_culled_connections(
                 continue;
             }
 
-            // TODO: this service exception type check is really slow i think, gotta speed this up (i think it alone is adding 4 seconds of compute)
             let service_exception_type = gtfs_data
                 .services
-                .get(&(
-                    gtfs_data
-                        .trips
-                        .get(&connection.trip_id)
-                        .ok_or("trip not found (non-fatal)")?
-                        .service_id,
-                    DEPART_INSTANT.date,
-                ))
+                .get(&(connection.service_id, DEPART_INSTANT.date))
                 .ok_or("service not found (non-fatal)");
 
             // if connection not in service today, skip it
@@ -358,7 +343,7 @@ pub fn get_culled_connections(
             }
 
             culled_connections_map
-                .entry(connection.from_stop_id)
+                .entry(*from_stop_id)
                 .or_insert_with(Vec::new)
                 .push(*connection);
         }

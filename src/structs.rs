@@ -80,8 +80,6 @@ pub struct Position {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Stop {
-    pub stop_id: u32,
-    // name: String,
     pub position: Position,
 }
 
@@ -133,14 +131,11 @@ impl RouteType {
 
 #[derive(Serialize, Deserialize)]
 pub struct Route {
-    pub route_id: u32,
     pub route_type: RouteType,
-    pub name: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Trip {
-    pub trip_id: u32,
     pub route_id: u32,
     pub service_id: u32,
     pub stop_times: Vec<StopTime>,
@@ -148,7 +143,6 @@ pub struct Trip {
 
 #[derive(Serialize, Deserialize)]
 pub struct StopTime {
-    pub trip_id: u32,
     pub stop_id: u32,
     /// seconds since midnight (note, can sometimes be greater than 24 hours worth)
     pub arrival_time: u32,
@@ -176,20 +170,20 @@ impl Date {
     }
 }
 
+/// Note: `from_stop_id` is not declared, since it's used as the key in the `connections` HashMap
 #[derive(Serialize, Deserialize)]
 pub struct Transfer {
-    pub from_stop_id: u32,
     pub to_stop_id: u32,
     /// (in seconds)
     pub min_transfer_time: u32,
 }
 
+/// Note: `from_stop_id` is not declared, since it's used as the key in the `connections` HashMap
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Connection {
-    pub from_stop_id: u32,
     pub to_stop_id: u32,
-    /// id of parent trip
-    pub trip_id: u32,
+    /// service id of parent trip
+    pub service_id: u32,
     /// time when arriving at destination (neighbor) stop (in seconds since midnight)
     pub arrival_time: u32,
     /// time when departing towards (neighbor) stop (in seconds since midnight)
