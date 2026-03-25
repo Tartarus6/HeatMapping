@@ -543,14 +543,14 @@ pub fn initialize_buffers(
 
     // TODO: this needs to dynamicall change with screen size
     // Build jump sequence: 8192, 4096, ..., 1
-    let mut jumps: Vec<f32> = Vec::new();
+    let mut jumps: Vec<u32> = Vec::new();
     let mut j = 1024u32;
-    jumps.push(1.0); // add an extra jump of distance 1 in order to improve output stability
+    jumps.push(1); // add an extra jump of distance 1 in order to improve output stability
     while j >= 1 {
-        jumps.push(j as f32);
+        jumps.push(j);
         j /= 2;
     }
-    jumps.push(1.0); // add an extra jump of distance 1 in order to improve output stability
+    jumps.push(1); // add an extra jump of distance 1 in order to improve output stability
 
     let jfa_jump_values_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("JFA Jump Values Buffer"),

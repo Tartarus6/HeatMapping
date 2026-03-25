@@ -5,9 +5,9 @@ const positions: array<vec2<f32>, 3> = array(
 ); // oversized triangle to cover full viewport after clipping
 
 struct JFAConfig {
-    jfa_width: f32,       // how many pixels wide the image is
-    jfa_height: f32,      // how many pixels high the image is
-    jump_size: f32,       // jump size for JFA
+    jfa_width: u32,       // how many pixels wide the image is
+    jfa_height: u32,      // how many pixels high the image is
+    jump_size: u32,       // jump size for JFA
     meters_per_px_x: f32, // approximate number of meters per x pixel
     meters_per_px_y: f32, // approximate number of meters per y pixel
 }
@@ -21,7 +21,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if i >= arrayLength(&seeds) { return; }
 
-    let xy: vec2u = vec2u(i % u32(jfa_config.jfa_width), i / u32(jfa_config.jfa_width));
+    let xy: vec2u = vec2u(i % jfa_config.jfa_width, i / jfa_config.jfa_width);
 
     let seed = seeds[i];
 

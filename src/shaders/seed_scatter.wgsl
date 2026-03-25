@@ -15,8 +15,8 @@ struct GpuGridCellVal {
 }
 
 struct ShaderConfig {
-    width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels high the image is
+    width: u32,  // how many pixels wide the image is
+    height: u32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
@@ -28,9 +28,9 @@ struct ShaderConfig {
 }
 
 struct JFAConfig {
-    jfa_width: f32,       // how many pixels wide the image is
-    jfa_height: f32,      // how many pixels high the image is
-    jump_size: f32,       // jump size for JFA
+    jfa_width: u32,       // how many pixels wide the image is
+    jfa_height: u32,      // how many pixels high the image is
+    jump_size: u32,       // jump size for JFA
     meters_per_px_x: f32, // approximate number of meters per x pixel
     meters_per_px_y: f32, // approximate number of meters per y pixel
 }
@@ -70,18 +70,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let stop_uv = (vec2f(stop.lat, stop.lon) - bounding_box_min) / (bounding_box_max - bounding_box_min);
 
     // stop poitions (float pixel coordinates)
-    let stop_x = u32(stop_uv.y * jfa_config.jfa_width);
-    let stop_y = u32((1.0 - stop_uv.x) * jfa_config.jfa_height);
+    let stop_x = u32(stop_uv.y * f32(jfa_config.jfa_width));
+    let stop_y = u32((1.0 - stop_uv.x) * f32(jfa_config.jfa_height));
 
     // store stop index in texture
     let packed: vec4<u32> = vec4<u32>(i + 1, 0u, 0u, 0u); // offset added to differentiate index 0 from a cleared pixel
 
     // bounds guard
-    if stop_x < 0 || stop_y < 0 || stop_x >= u32(jfa_config.jfa_width) || stop_y >= u32(jfa_config.jfa_height) {
+    if stop_x < 0 || stop_y < 0 || stop_x >= jfa_config.jfa_width || stop_y >= jfa_config.jfa_height {
         return;
     }
 
-    try_claim(stop_x + u32(jfa_config.jfa_width) * stop_y, i + 1u);
+    try_claim(stop_x + jfa_config.jfa_width * stop_y, i + 1u);
 }
 
 fn is_better(my_idx1: u32, cur_idx1: u32) -> bool {

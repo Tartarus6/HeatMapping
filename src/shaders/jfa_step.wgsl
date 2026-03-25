@@ -1,6 +1,6 @@
 struct ShaderConfig {
-    width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels high the image is
+    width: u32,  // how many pixels wide the image is
+    height: u32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
@@ -12,9 +12,9 @@ struct ShaderConfig {
 }
 
 struct JFAConfig {
-    jfa_width: f32,       // how many pixels wide the image is
-    jfa_height: f32,      // how many pixels high the image is
-    jump_size: f32,       // jump size for JFA
+    jfa_width: u32,       // how many pixels wide the image is
+    jfa_height: u32,      // how many pixels high the image is
+    jump_size: u32,       // jump size for JFA
     meters_per_px_x: f32, // approximate number of meters per x pixel
     meters_per_px_y: f32, // approximate number of meters per y pixel
 }
@@ -40,7 +40,7 @@ const HALF_SQRT_2: f32 = 0.707106781;
 
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= u32(jfa_config.jfa_width) || gid.y >= u32(jfa_config.jfa_height) { return; }
+    if gid.x >= jfa_config.jfa_width || gid.y >= jfa_config.jfa_height { return; }
 
     // the position of current pixel
     let point = vec2<i32>(i32(gid.x), i32(gid.y));
@@ -53,15 +53,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // check 8 neighbors at distance jump
     for (var dx = -1; dx <= 1; dx++) {
         for (var dy = -1; dy <= 1; dy++) {
-            // octagonal neighbor pattern (looks a bit better than using square neighbors)
-            // var delta_px: vec2i;
-            // if abs(dx) + abs(dy) == 2 { // if we're on a diagonal neighbor
-            //     // then scale delta by half sqrt(2) in order to normalize distance to 1
-            //     delta_px = vec2<i32>(i32(f32(dx) * jfa_config.jump_size * HALF_SQRT_2), i32(f32(dy) * jfa_config.jump_size * HALF_SQRT_2));
-            // } else {
-            //     delta_px = vec2<i32>(dx * i32(jfa_config.jump_size), dy * i32(jfa_config.jump_size));
-            // }
-
             // square neighbor pattern (standard JFA shape)
             let delta_px = vec2<i32>(dx * i32(jfa_config.jump_size), dy * i32(jfa_config.jump_size));
 
@@ -89,7 +80,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let v: f32 = 1.0 - (candidate_stop.lat - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
             let candidate_stop_norm: vec2f = vec2f(u, v);
             // get candidate stop pixel vec2i(x, y)
-            let candidate_stop_pixel: vec2i = vec2i(candidate_stop_norm * vec2f(jfa_config.jfa_width, jfa_config.jfa_height));
+            let candidate_stop_pixel: vec2i = vec2i(candidate_stop_norm * vec2f(vec2u(jfa_config.jfa_width, jfa_config.jfa_height)));
 
             // TODO: could precompute sqrt(2) and use that as a factor when diagonal, or just use the x or y if orthogonal (to prevent need to use length())
             // approx. distance in meters between this point and candidate point

@@ -267,8 +267,8 @@ pub struct GpuStop {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderConfig {
-    pub width: f32,  // how many pixels wide the image is
-    pub height: f32, // how many pixels high the image is
+    pub width: u32,  // how many pixels wide the image is
+    pub height: u32, // how many pixels high the image is
     pub bbox_min_lat: f32,
     pub bbox_min_lon: f32,
     pub bbox_max_lat: f32,
@@ -283,9 +283,9 @@ pub struct ShaderConfig {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct JFAConfig {
-    pub jfa_width: f32,       // how many pixels wide the image is
-    pub jfa_height: f32,      // how many pixels high the image is
-    pub jump_size: f32,       // jump size for JFA
+    pub jfa_width: u32,       // how many pixels wide the image is
+    pub jfa_height: u32,      // how many pixels high the image is
+    pub jump_size: u32,       // jump size for JFA
     pub meters_per_px_x: f32, // approximate number of meters per x pixel
     pub meters_per_px_y: f32, // approximate number of meters per y pixel
 }

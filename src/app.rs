@@ -44,12 +44,12 @@ impl App {
         let begin_time = DEPART_INSTANT.time;
 
         let shader_config = ShaderConfig {
-            width: MAX_DIM as f32,  // dummy init value (will be overwritten)
-            height: MAX_DIM as f32, // dummy init value (will be overwritten)
-            bbox_min_lat: 0.0,      // dummy init value (will be overwritten)
-            bbox_min_lon: 1.0,      // dummy init value (will be overwritten)
-            bbox_max_lat: 0.0,      // dummy init value (will be overwritten)
-            bbox_max_lon: 1.0,      // dummy init value (will be overwritten)
+            width: MAX_DIM,    // dummy init value (will be overwritten)
+            height: MAX_DIM,   // dummy init value (will be overwritten)
+            bbox_min_lat: 0.0, // dummy init value (will be overwritten)
+            bbox_min_lon: 1.0, // dummy init value (will be overwritten)
+            bbox_max_lat: 0.0, // dummy init value (will be overwritten)
+            bbox_max_lon: 1.0, // dummy init value (will be overwritten)
             gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
             begin_time: begin_time as f32,
             max_walk_transfer_distance: MAX_WALK_TRANSFER_DISTANCE as f32,
@@ -57,9 +57,9 @@ impl App {
         };
 
         let jfa_config = JFAConfig {
-            jfa_width: 0.0,       // dummy init value (will be overwritten)
-            jfa_height: 0.0,      // dummy init value (will be overwritten)
-            jump_size: 0.0,       // dummy init value (will be overwritten)
+            jfa_width: 0,         // dummy init value (will be overwritten)
+            jfa_height: 0,        // dummy init value (will be overwritten)
+            jump_size: 0,         // dummy init value (will be overwritten)
             meters_per_px_x: 0.0, // dummy init value (will be overwritten)
             meters_per_px_y: 0.0, // dummy init value (will be overwritten)
         };
@@ -93,17 +93,17 @@ impl ApplicationHandler for App {
             bbox_from_center(center, INITIAL_HALF_LAT_SPAN, size.width, size.height);
 
         // update configs to match real startup window
-        self.shader_config.width = size.width as f32;
-        self.shader_config.height = size.height as f32;
-        self.shader_config.bbox_min_lat = bbox_min.lat as f32;
-        self.shader_config.bbox_min_lon = bbox_min.lon as f32;
-        self.shader_config.bbox_max_lat = bbox_max.lat as f32;
-        self.shader_config.bbox_max_lon = bbox_max.lon as f32;
+        self.shader_config.width = size.width;
+        self.shader_config.height = size.height;
+        self.shader_config.bbox_min_lat = bbox_min.lat;
+        self.shader_config.bbox_min_lon = bbox_min.lon;
+        self.shader_config.bbox_max_lat = bbox_max.lat;
+        self.shader_config.bbox_max_lon = bbox_max.lon;
 
         let jfa_w = max(1, size.width / JFA_SCALE);
         let jfa_h = max(1, size.height / JFA_SCALE);
-        self.jfa_config.jfa_width = jfa_w as f32;
-        self.jfa_config.jfa_height = jfa_h as f32;
+        self.jfa_config.jfa_width = jfa_w;
+        self.jfa_config.jfa_height = jfa_h;
 
         let mpp = meters_per_pixel(bbox_min, bbox_max, jfa_w, jfa_h);
         self.jfa_config.meters_per_px_x = mpp.0;
@@ -397,13 +397,13 @@ fn resize(state: &mut RenderState, new_size: PhysicalSize<u32>) {
     state.surface.configure(&state.device, &state.config);
 
     // update shader_config
-    state.shader_config.width = new_size.width as f32;
-    state.shader_config.height = new_size.height as f32;
+    state.shader_config.width = new_size.width;
+    state.shader_config.height = new_size.height;
     state.upload_shader_config();
 
     // update jfa_config
-    state.jfa_config.jfa_width = max(1, new_size.width / JFA_SCALE) as f32;
-    state.jfa_config.jfa_height = max(1, new_size.height / JFA_SCALE) as f32;
+    state.jfa_config.jfa_width = max(1, new_size.width / JFA_SCALE);
+    state.jfa_config.jfa_height = max(1, new_size.height / JFA_SCALE);
 
     let meters_per_pixel = meters_per_pixel(
         Position {

@@ -4,8 +4,8 @@ struct VsOut {
 };
 
 struct ShaderConfig {
-    width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels high the image is
+    width: u32,  // how many pixels wide the image is
+    height: u32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
@@ -17,9 +17,9 @@ struct ShaderConfig {
 }
 
 struct JFAConfig {
-    jfa_width: f32,       // how many pixels wide the image is
-    jfa_height: f32,      // how many pixels high the image is
-    jump_size: f32,       // jump size for JFA
+    jfa_width: u32,       // how many pixels wide the image is
+    jfa_height: u32,      // how many pixels high the image is
+    jump_size: u32,       // jump size for JFA
     meters_per_px_x: f32, // approximate number of meters per x pixel
     meters_per_px_y: f32, // approximate number of meters per y pixel
 }
@@ -103,7 +103,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         let best_stop_v: f32 = 1.0 - (best_stop.lat - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
         let best_stop_uv: vec2f = vec2f(best_stop_u, best_stop_v);
 
-        let meters_per_uv = vec2f(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y) * vec2f(jfa_config.jfa_width, jfa_config.jfa_height);
+        let meters_per_uv = vec2f(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y) * vec2f(vec2u(jfa_config.jfa_width, jfa_config.jfa_height));
 
         let dist: f32 = length((uv - best_stop_uv) * meters_per_uv);
 
