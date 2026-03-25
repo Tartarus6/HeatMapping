@@ -1,8 +1,13 @@
+//! This file contains the implemtation of the multi pass shader that draws the heatmap on screen
+//! For the GUI refer to [`app.rs`]
+//! For the actual shader rust implementation refer to [`RenderState`] implementation
+
 use std::{
     cmp::{max, min},
     sync::Arc,
     u32,
 };
+
 use tracing::{info_span, instrument};
 use wgpu::{BufferUsages, Device, util::DeviceExt};
 use winit::window::Window;
@@ -83,7 +88,15 @@ pub struct RenderState {
     pub shader_config: ShaderConfig, // CPU-side copy
     pub jfa_config: JFAConfig,       // CPU-side copy
 }
+/// the render state is object fed to the App for the rendering, all shader passes are computer here \
+/// 1: JFA seed pass: turns stops coordinates to seeds for the JFA algorithm \
+/// 2: JFA step passes: uses the seeds to calculate faster time to positions \
 
+/// # Safety : Seeding tends to give race conditions because of overlapping stops
+/// This can some times give wrong arrival times
+
+/// 3: min max pass: finds the lowest and highest time for the rendering pipeline \
+/// 4: render pass: turns the coordinate and time to reach it into pixel color using a gradient from lowest to highest time \n
 impl RenderState {
     #[instrument(skip(self))]
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -109,7 +122,7 @@ impl RenderState {
         encoder.clear_buffer(&self.buffers.seeds_buffer, 0, None);
 
         {
-            // JFA Seed Pass
+            // JFA Seed Pass (creates all the needed seeds from the gtfs stops)
             {
                 let mut jfa_seed_compute_pass =
                     encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -165,7 +178,7 @@ impl RenderState {
             }
 
             // JFA Step Passes
-            // flips read/write between texture_a and texture_b
+            // flips read/write between texture_a and texture_b to avoid race conditions
             // false -> read texture_a, write texture_b
             // true -> read texture_b, write texture_a
             let mut flip = false;
@@ -396,7 +409,7 @@ impl RenderState {
 
         Ok(())
     }
-
+    /// This is some window stuff for the application
     pub async fn new(
         window: Arc<Window>,
         gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
@@ -414,6 +427,7 @@ impl RenderState {
 
         // SAFETY: the surface must not outlive the window it was created from.
         // We keep both alive together in App, so this is safe.
+
         let surface = instance.create_surface(window).unwrap();
 
         let adapter = instance
@@ -485,7 +499,7 @@ impl RenderState {
         }
     }
 
-    /// Update the shader config buffer (used to give real time input to the shader, like window resizes and such)
+    // Update the shader config buffer (used to give real time input to the shader, like window resizes and such)
     pub fn upload_shader_config(&self) {
         self.queue.write_buffer(
             &self.buffers.shader_config_buffer,
@@ -494,7 +508,7 @@ impl RenderState {
         );
     }
 
-    /// Update the jfa config buffer (used to give real time input to the shader, like window resizes and such)
+    // Update the jfa config buffer (used to give real time input to the shader, like window resizes and such)
     pub fn upload_jfa_config(&self) {
         self.queue.write_buffer(
             &self.buffers.jfa_config_buffer,
@@ -503,7 +517,7 @@ impl RenderState {
         );
     }
 
-    /// recreates textures and bind groups for the jump flood algorithm. Needed when resizing, because texture changes size.
+    // recreates textures and bind groups for the jump flood algorithm. Needed when resizing, because texture changes size.
     pub fn recreate_jfa_textures_and_bind_groups(&mut self) {
         self.shader_resources.recreate_jfa_textures_and_bind_groups(
             &self.device,
@@ -513,6 +527,7 @@ impl RenderState {
     }
 }
 
+/// From here this is mainly wgpu boilerPlate to make the set up the shaders and pipeline them in order
 // TODO: move this const somewhere better. as well as any other scattered consts (they should prolly all be in main.rs)
 // /// Maximum JFA jump size
 const JUMP_MAX: u32 = 1073741824;

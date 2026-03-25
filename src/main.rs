@@ -38,11 +38,11 @@ const JFA_SCALE: u32 = 8;
 const DEPART_INSTANT: DepartInstant = DepartInstant {
     position: Position {
         // Amsterdam
-        // lat: 0.913998595445,
-        // lon: 0.085599725524,
+        lat: 0.913998595445,
+        lon: 0.085599725524,
         // Copenhagen (i think)
-        lat: 0.972092,
-        lon: 0.218484,
+        //lat: 0.972092,
+        //lon: 0.218484,
     },
     time: 32400, // 09:00:00
     date: Date {

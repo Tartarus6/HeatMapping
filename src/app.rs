@@ -1,3 +1,4 @@
+//! This file contains all regarding the GUI application, draws the window and deals with user input such as panning and zooming, updating the rendering as needed.
 use std::cmp::max;
 use std::sync::Arc;
 

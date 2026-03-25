@@ -1,4 +1,4 @@
-// This file contains all of the implementations related to parsing the gtfs files
+//! This file contains all of the implementations related to parsing the gtfs files
 
 use csv::{Reader, StringRecord};
 use std::fs;
