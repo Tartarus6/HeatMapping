@@ -1,9 +1,16 @@
-use std::{cmp::max, sync::Arc, u32};
+use std::{
+    cmp::{max, min},
+    sync::Arc,
+    u32,
+};
 use tracing::{info_span, instrument};
 use wgpu::{BufferUsages, Device, util::DeviceExt};
 use winit::window::Window;
 
-use crate::structs::{GpuGridCellKey, GpuGridCellVal, GpuStop, JFAConfig, ShaderConfig};
+use crate::{
+    structs::{GpuGridCellKey, GpuGridCellVal, GpuStop, JFAConfig, ShaderConfig},
+    utils::log2,
+};
 
 const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
@@ -163,7 +170,15 @@ impl RenderState {
             // true -> read texture_b, write texture_a
             let mut flip = false;
             {
-                for jump_size_index in 0..self.buffers.jfa_jump_count {
+                let jump_size_range = min(
+                    // TODO: why does this need to be +2 not just +1 (it'd make sense for edge cases, but it always needs to be +2). to test, zoom way into one lone stop and see if the gradient turns into a square
+                    // +1 is to include the additional jump of size 1
+                    log2(max(self.jfa_config.jfa_width, self.jfa_config.jfa_height)) + 2,
+                    self.buffers.jfa_jump_count,
+                );
+                for jump_size_index in
+                    self.buffers.jfa_jump_count - jump_size_range..self.buffers.jfa_jump_count
+                {
                     // Copy one f32 jump value into ShaderConfig.jump_size
                     let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
                     encoder.copy_buffer_to_buffer(
@@ -500,6 +515,10 @@ impl RenderState {
     }
 }
 
+// TODO: move this const somewhere better. as well as any other scattered consts (they should prolly all be in main.rs)
+// /// Maximum JFA jump size
+const JUMP_MAX: u32 = 1073741824;
+
 pub fn initialize_buffers(
     device: &Device,
     gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
@@ -541,11 +560,11 @@ pub fn initialize_buffers(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // TODO: this needs to dynamicall change with screen size
-    // Build jump sequence: 8192, 4096, ..., 1
+    // TODO: this needs to dynamically change with screen size
+    // Build jump sequence: 1, 1, 2, 4, ..., 4096, ..., JUMP_MAX
     let mut jumps: Vec<u32> = Vec::new();
-    let mut j = 1024u32;
-    jumps.push(1); // add an extra jump of distance 1 in order to improve output stability
+    let mut j: u32 = JUMP_MAX;
+
     while j >= 1 {
         jumps.push(j);
         j /= 2;
@@ -562,9 +581,10 @@ pub fn initialize_buffers(
     // Offset of jump_size in JFAConfig (11th f32 field, zero-based index 10)
     let jfa_config_jump_offset_bytes = (2 * std::mem::size_of::<f32>()) as u64;
 
+    // TODO: make a const for timestamp_pass_count, or some other solution, rather than having some random magic number in the code
     // We record 2 timestamps per pass: begin/end.
     // Passes: seed + each jfa step + final render.
-    let timestamp_pass_count = 1 + 1 + (jumps.len() as u32) + 1 + 1; // seed + texturify + steps + render + stop_points
+    let timestamp_pass_count = 128u32; // set to a high number just so that there's always extra
     let timestamp_query_count = timestamp_pass_count * 2;
 
     let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -1326,17 +1346,14 @@ impl ShaderResources {
         jfa_config: &JFAConfig,
     ) {
         let (jfa_texture_a, jfa_texture_b, jfa_texture_a_view, jfa_texture_b_view) =
-            create_jfa_texture_pair(
-                device,
-                jfa_config.jfa_width as u32,
-                jfa_config.jfa_height as u32,
-            );
+            create_jfa_texture_pair(device, jfa_config.jfa_width, jfa_config.jfa_height);
 
         self.jfa_texture_a = jfa_texture_a;
         self.jfa_texture_b = jfa_texture_b;
         self.jfa_texture_a_view = jfa_texture_a_view;
         self.jfa_texture_b_view = jfa_texture_b_view;
 
+        // TODO: remove seeds buffer recreation, just run initialize_buffers() on resize
         // Recreate seeds buffer with new size
         let jfa_pixel_count: usize =
             (jfa_config.jfa_width as usize) * (jfa_config.jfa_height as usize);
