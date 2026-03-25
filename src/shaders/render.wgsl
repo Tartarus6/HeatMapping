@@ -78,21 +78,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // Clamp UV to avoid sampling outside (because our fullscreen triangle uses UV beyond 0..1)
     let uv = clamp(in.uv, vec2f(0.0), vec2f(1.0));
 
-    // convert UV into integer texel coordinates
-    let dims: vec2u = textureDimensions(jfa_tex);
-    // map uv in [0,1] to [0, dims-1]
-    let xy: vec2u = min(vec2u(uv * vec2f(dims)), dims - vec2u(1u));
-
     // load min and max arrival times from minmax
     let min_t = f32(atomicLoad(&minmax.min_time));
     let max_t = f32(atomicLoad(&minmax.max_time));
 
     // get the best stop index from the pixel (just x component since texture is r32uint)
+    let dims: vec2u = textureDimensions(jfa_tex);
+    let xy: vec2u = min(vec2u(uv * vec2f(dims)), dims - vec2u(1u)); // map uv in [0,1] to [0, dims-1]
     var best_stop_index: u32 = textureLoad(jfa_tex, vec2i(xy), 0).x; // offset included
 
     var arrival_time: u32;
 
-    // if candudate "candidate_stop_index" is zero, that means it's invalid (because pixel value is always stored with a +1 offset when it's valid, so a valid pixel can't be zero)
+    // if candidate "candidate_stop_index" is zero, that means it's invalid (because pixel value is always stored with a +1 offset when it's valid, so a valid pixel can't be zero)
     if best_stop_index == 0 {
         // set arrival_time for pixel to max_time so that it blends nicely with the end of the gradient
         arrival_time = u32(max_t);
@@ -102,16 +99,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         let best_stop = grid_stops[best_stop_index];
 
         // normalize candidate stop position vec2f([0,1], [0,1])
-        let u: f32 = (best_stop.lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
-        let v: f32 = 1.0 - (best_stop.lat - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
-        let best_stop_norm: vec2f = vec2f(u, v);
+        let best_stop_u: f32 = (best_stop.lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
+        let best_stop_v: f32 = 1.0 - (best_stop.lat - config.bbox_min_lat) / (config.bbox_max_lat - config.bbox_min_lat);
+        let best_stop_uv: vec2f = vec2f(best_stop_u, best_stop_v);
 
-        // get candidate stop pixel vec2i(x, y)
-        let best_stop_pixel: vec2i = vec2i(best_stop_norm * vec2f(jfa_config.jfa_width, jfa_config.jfa_height));
+        let meters_per_uv = vec2f(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y) * vec2f(jfa_config.jfa_width, jfa_config.jfa_height);
 
-        // TODO: could precompute sqrt(2) and use that as a factor when diagonal, or just use the x or y if orthogonal (to prevent need to use length())
-        // approx. distance in meters between this point and candidate point
-        let dist: f32 = length(vec2f(best_stop_pixel - vec2i(xy)) * vec2f(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y));
+        let dist: f32 = length((uv - best_stop_uv) * meters_per_uv);
 
         // walk time in seconds between this pixel and candidate pixel
         let walk_s = u32(dist * config.inverse_walk_speed_mps);

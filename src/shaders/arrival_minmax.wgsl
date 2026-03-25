@@ -41,8 +41,6 @@ struct GpuStop {
 @group(0) @binding(3) var<storage, read> grid_stops: array<GpuStop>;
 @group(0) @binding(4) var<storage, read_write> minmax: MinMax;
 
-// TODO: reduce minmax instability (panning around can lead to some sudden gradient changes)
-
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= u32(jfa_config.jfa_width) || gid.y >= u32(jfa_config.jfa_height) {
@@ -57,7 +55,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    best_stop_index -= 1u;
+    best_stop_index -= 1u; // remove offset
     let best_stop = grid_stops[best_stop_index];
 
     let u = (best_stop.lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
