@@ -261,6 +261,7 @@ impl ApplicationHandler for App {
     }
 }
 
+// TODO: zoom breaks if zooming far enough in. the map gets all stretched out, and stays like that until program restart. aspect ratio should be maintained despite floating point imprecision
 /// Zooms the view of the map.
 /// The zoom is centered on the position of the cursor.
 /// Takes in a mutable reference to the render state, the number of scroll steps, and the pixel position of the cursor.

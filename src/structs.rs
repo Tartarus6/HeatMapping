@@ -248,6 +248,8 @@ pub struct GpuGridCellVal {
     pub count: u32,
 }
 
+// TODO: idea - what if all of the lon and lat were stored as i32 instead of f32, to increase precision, since lat and lon have min and max pretty close to zero, a lot of float values are unused
+/// Instance of a stop for use in arrays in gpu buffers
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuStop {

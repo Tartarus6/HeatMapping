@@ -123,9 +123,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // convert arrival time into [0,1] based on max_time
     let denom = max(1.0, max_t - min_t);
     let uniform_arrival_time = clamp((f32(arrival_time) - min_t) / denom, 0.0, 1.0);
+    // let uniform_stop_index = clamp(f32(best_stop_index) / f32(arrayLength(&grid_stops)), 0.0, 1.0);
 
     // return the resulting color
     return vec4f(gradient_get_color(uniform_arrival_time));
+    // return vec4f(gradient_get_color(uniform_stop_index));
 }
 
 /// gets color on gradient based on scale [0,1]

@@ -46,11 +46,12 @@ struct GpuStop {
     _pad0: u32,
 }
 
-/// [lat, lon, arrival_time, None]
 @group(0) @binding(0) var<storage, read> grid_stops: array<GpuStop>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
-@group(0) @binding(2) var out_texture: texture_storage_2d<r32uint, write>;
-@group(0) @binding(3) var<uniform> jfa_config: JFAConfig;
+@group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
+@group(0) @binding(3) var<storage, read_write> seeds: array<atomic<u32>>;
+
+const EMPTY: u32 = 0xFFFFFFFFu;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -76,23 +77,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // store stop index in texture
     let packed: vec4<u32> = vec4<u32>(i + 1, 0u, 0u, 0u); // offset added to differentiate index 0 from a cleared pixel
 
-    // write to a 3x3 of pixels
-    // this effectively makes the JFA into a variant sometimes called 1+JFA, where a step size of 1 is done, then steps proceed as normal
-    for (var dx = -1; dx <= 1; dx++) {
-        for (var dy = -1; dy <= 1; dy++) {
-            let px: i32 = i32(stop_x) + dx;
-            let py: i32 = i32(stop_y) + dy;
+    // bounds guard
+    if stop_x < 0 || stop_y < 0 || stop_x >= u32(jfa_config.jfa_width) || stop_y >= u32(jfa_config.jfa_height) {
+        return;
+    }
 
-            // bounds guard
-            if px < 0 || py < 0 || px >= i32(jfa_config.jfa_width) || py >= i32(jfa_config.jfa_height) {
-                continue;
-            }
+    try_claim(stop_x + u32(jfa_config.jfa_width) * stop_y, i + 1u);
+}
 
-            textureStore(
-                out_texture,
-                vec2<i32>(i32(stop_x) + dx, i32(stop_y) + dy),
-                packed
-            );
+fn is_better(my_idx1: u32, cur_idx1: u32) -> bool {
+    // idx1 is 1-based stored index; convert to 0-based for stop lookup
+    let my_idx0 = my_idx1 - 1u;
+    let cur_idx0 = cur_idx1 - 1u;
+
+    let my_arr = grid_stops[my_idx0].arrival_time;
+    let cur_arr = grid_stops[cur_idx0].arrival_time;
+
+    // tie-breaker for determinism: lower index wins
+    return (my_arr < cur_arr) || (my_arr == cur_arr && my_idx1 < cur_idx1);
+}
+
+fn try_claim(pixel_i: u32, my_idx1: u32) {
+    loop {
+        let cur = atomicLoad(&seeds[pixel_i]);
+
+        if cur == EMPTY {
+            let r = atomicCompareExchangeWeak(&seeds[pixel_i], EMPTY, my_idx1);
+            if r.exchanged { break; }
+            continue;
         }
+
+        if !is_better(my_idx1, cur) {
+            break; // current winner is better (or equal with tie-break)
+        }
+
+        let r = atomicCompareExchangeWeak(&seeds[pixel_i], cur, my_idx1);
+        if r.exchanged { break; }
+        // else: lost race, retry
     }
 }
