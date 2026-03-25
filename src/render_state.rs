@@ -1,9 +1,16 @@
-use std::{cmp::max, sync::Arc};
+use std::{
+    cmp::{max, min},
+    sync::Arc,
+    u32,
+};
 use tracing::{info_span, instrument};
 use wgpu::{BufferUsages, Device, util::DeviceExt};
 use winit::window::Window;
 
-use crate::structs::{GpuGridCellKey, GpuGridCellVal, GpuStop, JFAConfig, ShaderConfig};
+use crate::{
+    structs::{GpuGridCellKey, GpuGridCellVal, GpuStop, JFAConfig, ShaderConfig},
+    utils::log2,
+};
 
 const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
@@ -12,6 +19,7 @@ const JFA_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 pub struct Buffers {
     pub gpu_stops_buffer: wgpu::Buffer,
     pub minmax_buffer: wgpu::Buffer,
+    pub seeds_buffer: wgpu::Buffer,
 
     pub shader_config_buffer: wgpu::Buffer,
     pub jfa_config_buffer: wgpu::Buffer,
@@ -31,6 +39,10 @@ pub struct ShaderResources {
     pub jfa_seed_pipeline: wgpu::ComputePipeline,
     pub jfa_seed_bind_group: wgpu::BindGroup,
     pub jfa_seed_bind_group_layout: wgpu::BindGroupLayout,
+
+    pub jfa_seed_texturify_pipeline: wgpu::ComputePipeline,
+    pub jfa_seed_texturify_bind_group: wgpu::BindGroup,
+    pub jfa_seed_texturify_bind_group_layout: wgpu::BindGroupLayout,
 
     pub jfa_step_pipeline: wgpu::ComputePipeline,
     pub jfa_step_bind_group_a: wgpu::BindGroup,
@@ -84,15 +96,21 @@ impl RenderState {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let output = self.surface.get_current_texture()?;
 
+        // TODO: delegate clearing buffers for the new frame (and maybe also texture) into a dedicated function
+
+        // TODO: switch to using a shader to clear the texture, it's faster i think
+        // Clear texture_a for new frame
+        encoder.clear_texture(
+            &self.shader_resources.jfa_texture_a,
+            &wgpu::ImageSubresourceRange::default(),
+        );
+
+        // Clear seeds_buffer for new frame
+        encoder.clear_buffer(&self.buffers.seeds_buffer, 0, None);
+
         {
             // JFA Seed Pass
             {
-                encoder.clear_texture(
-                    &self.shader_resources.jfa_texture_a,
-                    &wgpu::ImageSubresourceRange::default(),
-                );
-                // encoder.clear_texture(&self.shader_resources.jfa_texture_b, &wgpu::ImageSubresourceRange::default());
-
                 let mut jfa_seed_compute_pass =
                     encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("Seed Compute Pass"),
@@ -118,13 +136,47 @@ impl RenderState {
                 jfa_seed_compute_pass.dispatch_workgroups(dispatch_x, 1, 1);
             }
 
+            // JFA Seed Texturify Pass
+            {
+                let mut jfa_seed_texturify_compute_pass =
+                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("Seed Texturify Compute Pass"),
+                        timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                            query_set: &self.buffers.timestamp_query_set,
+                            beginning_of_pass_write_index: Some(q),
+                            end_of_pass_write_index: Some(q + 1),
+                        }),
+                    });
+
+                q += 2; // increment q for seed enter and close
+
+                jfa_seed_texturify_compute_pass
+                    .set_pipeline(&self.shader_resources.jfa_seed_texturify_pipeline);
+                jfa_seed_texturify_compute_pass.set_bind_group(
+                    0,
+                    &self.shader_resources.jfa_seed_texturify_bind_group,
+                    &[],
+                );
+
+                let wg = 256u32;
+                let n: u32 = self.jfa_config.jfa_width as u32 * self.jfa_config.jfa_height as u32; // store this somewhere
+                let dispatch_x = (n + wg - 1) / wg;
+                jfa_seed_texturify_compute_pass.dispatch_workgroups(dispatch_x, 1, 1);
+            }
+
             // JFA Step Passes
             // flips read/write between texture_a and texture_b
             // false -> read texture_a, write texture_b
             // true -> read texture_b, write texture_a
             let mut flip = false;
             {
-                for jump_size_index in 0..self.buffers.jfa_jump_count {
+                let jump_size_range = min(
+                    // TODO: why does this need to be +2 not just +1 (it'd make sense for edge cases, but it always needs to be +2). to test, zoom way into one lone stop and see if the gradient turns into a square
+                    // +1 is to include the additional jump of size 1
+                    log2(max(self.jfa_config.jfa_width, self.jfa_config.jfa_height)) + 2,
+                    self.buffers.jfa_jump_count,
+                );
+                for jump_size_index in (0..jump_size_range).rev() {
                     // Copy one f32 jump value into ShaderConfig.jump_size
                     let src_offset = (jump_size_index as u64) * (std::mem::size_of::<f32>() as u64);
                     encoder.copy_buffer_to_buffer(
@@ -254,6 +306,7 @@ impl RenderState {
                 render_pass.draw(0..3, 0..1);
             }
 
+            // TODO: stop points gets kinda slow with high stop count (when zoomed out). maybe could combine stops when close enough in screen space
             // Stop points overlay pass (draw points on top of heatmap)
             {
                 let view = output
@@ -454,11 +507,15 @@ impl RenderState {
     pub fn recreate_jfa_textures_and_bind_groups(&mut self) {
         self.shader_resources.recreate_jfa_textures_and_bind_groups(
             &self.device,
-            &self.buffers,
+            &mut self.buffers,
             &self.jfa_config,
         );
     }
 }
+
+// TODO: move this const somewhere better. as well as any other scattered consts (they should prolly all be in main.rs)
+// /// Maximum JFA jump size
+const JUMP_MAX: u32 = 1073741824;
 
 pub fn initialize_buffers(
     device: &Device,
@@ -501,15 +558,15 @@ pub fn initialize_buffers(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // TODO: this needs to dynamicall change with screen size
-    // Build jump sequence: 8192, 4096, ..., 1
-    let mut jumps: Vec<f32> = Vec::new();
-    let mut j = 1024u32;
-    while j >= 1 {
-        jumps.push(j as f32);
-        j /= 2;
+    // Build jump sequence: 1, 1, 2, 4, ..., 4096, ..., JUMP_MAX
+    let mut jumps: Vec<u32> = Vec::new();
+    let mut j: u32 = 1;
+
+    jumps.push(1); // add an extra jump of distance 1 in order to improve output stability
+    while j <= JUMP_MAX {
+        jumps.push(j);
+        j *= 2;
     }
-    // jumps.push(1.0); // add an extra jump of distance 1 in order to improve output stability
 
     let jfa_jump_values_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("JFA Jump Values Buffer"),
@@ -521,9 +578,10 @@ pub fn initialize_buffers(
     // Offset of jump_size in JFAConfig (11th f32 field, zero-based index 10)
     let jfa_config_jump_offset_bytes = (2 * std::mem::size_of::<f32>()) as u64;
 
+    // TODO: make a const for timestamp_pass_count, or some other solution, rather than having some random magic number in the code
     // We record 2 timestamps per pass: begin/end.
     // Passes: seed + each jfa step + final render.
-    let timestamp_pass_count = 1 + (jumps.len() as u32) + 1 + 1; // seed + steps + render + stop_points
+    let timestamp_pass_count = 128u32; // set to a high number just so that there's always extra
     let timestamp_query_count = timestamp_pass_count * 2;
 
     let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -555,9 +613,18 @@ pub fn initialize_buffers(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
+    let jfa_pixel_count: usize = (jfa_config.jfa_width as usize) * (jfa_config.jfa_height as usize);
+    let seeds_init: Vec<u32> = vec![u32::MAX; jfa_pixel_count];
+    let seeds_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Seeds Buffer"),
+        contents: bytemuck::cast_slice(&seeds_init),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+
     return Buffers {
         gpu_stops_buffer,
         minmax_buffer,
+        seeds_buffer,
 
         shader_config_buffer,
         jfa_config_buffer,
@@ -606,18 +673,18 @@ pub fn initialize_shader_resources(
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: JFA_TEXTURE_FORMAT,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -643,6 +710,64 @@ pub fn initialize_shader_resources(
         compilation_options: Default::default(),
         cache: None,
     });
+
+    // --- JFA Seed Texturify ---
+    let jfa_seed_texturify_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("JFA Seed Texturify Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: JFA_TEXTURE_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+    let jfa_seed_texturify_shader =
+        device.create_shader_module(wgpu::include_wgsl!("shaders/seed_texturify.wgsl"));
+
+    let jfa_seed_texturify_pipeline_layout =
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("JFA Seed Texturify Pipeline Layout"),
+            bind_group_layouts: &[&jfa_seed_texturify_bind_group_layout],
+            immediate_size: 0,
+        });
+
+    let jfa_seed_texturify_pipeline =
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("JFA Seed Texturify Pipeline"),
+            layout: Some(&jfa_seed_texturify_pipeline_layout),
+            module: &jfa_seed_texturify_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
 
     // --- JFA Step ---
     let jfa_step_bind_group_layout =
@@ -1004,15 +1129,36 @@ pub fn initialize_shader_resources(
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: buffers.jfa_config_buffer.as_entire_binding(),
+                    resource: buffers.seeds_buffer.as_entire_binding(),
                 },
             ],
         }),
         jfa_seed_bind_group_layout,
+
+        jfa_seed_texturify_pipeline,
+        jfa_seed_texturify_bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Seed Texturify Bind Group"),
+            layout: &jfa_seed_texturify_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: buffers.seeds_buffer.as_entire_binding(),
+                },
+            ],
+        }),
+        jfa_seed_texturify_bind_group_layout,
 
         jfa_step_pipeline,
         jfa_step_bind_group_a: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1193,20 +1339,27 @@ impl ShaderResources {
     pub fn recreate_jfa_textures_and_bind_groups(
         &mut self,
         device: &Device,
-        buffers: &Buffers,
+        buffers: &mut Buffers,
         jfa_config: &JFAConfig,
     ) {
         let (jfa_texture_a, jfa_texture_b, jfa_texture_a_view, jfa_texture_b_view) =
-            create_jfa_texture_pair(
-                device,
-                jfa_config.jfa_width as u32,
-                jfa_config.jfa_height as u32,
-            );
+            create_jfa_texture_pair(device, jfa_config.jfa_width, jfa_config.jfa_height);
 
         self.jfa_texture_a = jfa_texture_a;
         self.jfa_texture_b = jfa_texture_b;
         self.jfa_texture_a_view = jfa_texture_a_view;
         self.jfa_texture_b_view = jfa_texture_b_view;
+
+        // TODO: remove seeds buffer recreation, just run initialize_buffers() on resize
+        // Recreate seeds buffer with new size
+        let jfa_pixel_count: usize =
+            (jfa_config.jfa_width as usize) * (jfa_config.jfa_height as usize);
+        let seeds_init: Vec<u32> = vec![u32::MAX; jfa_pixel_count];
+        buffers.seeds_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Seeds Buffer"),
+            contents: bytemuck::cast_slice(&seeds_init),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
         self.jfa_seed_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("JFA Seed Bind Group"),
@@ -1222,11 +1375,30 @@ impl ShaderResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                    resource: buffers.jfa_config_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
+                    resource: buffers.seeds_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.jfa_seed_texturify_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("JFA Seed Texturify Bind Group"),
+            layout: &self.jfa_seed_texturify_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
                     resource: buffers.jfa_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.jfa_texture_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: buffers.seeds_buffer.as_entire_binding(),
                 },
             ],
         });

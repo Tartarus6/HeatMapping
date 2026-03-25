@@ -248,6 +248,8 @@ pub struct GpuGridCellVal {
     pub count: u32,
 }
 
+// TODO: idea - what if all of the lon and lat were stored as i32 instead of f32, to increase precision, since lat and lon have min and max pretty close to zero, a lot of float values are unused
+/// Instance of a stop for use in arrays in gpu buffers
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuStop {
@@ -265,14 +267,12 @@ pub struct GpuStop {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderConfig {
-    pub width: f32,  // how many pixels wide the image is
-    pub height: f32, // how many pixels high the image is
+    pub width: u32,  // how many pixels wide the image is
+    pub height: u32, // how many pixels high the image is
     pub bbox_min_lat: f32,
     pub bbox_min_lon: f32,
     pub bbox_max_lat: f32,
     pub bbox_max_lon: f32,
-    pub gpu_grid_cell_size: f32,         // size of each cell (in radians)
-    pub begin_time: f32,                 // departure time in seconds since midnight
     pub max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
     pub inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }
@@ -281,9 +281,9 @@ pub struct ShaderConfig {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct JFAConfig {
-    pub jfa_width: f32,       // how many pixels wide the image is
-    pub jfa_height: f32,      // how many pixels high the image is
-    pub jump_size: f32,       // jump size for JFA
+    pub jfa_width: u32,       // how many pixels wide the image is
+    pub jfa_height: u32,      // how many pixels high the image is
+    pub jump_size: u32,       // jump size for JFA
     pub meters_per_px_x: f32, // approximate number of meters per x pixel
     pub meters_per_px_y: f32, // approximate number of meters per y pixel
 }

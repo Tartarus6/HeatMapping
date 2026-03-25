@@ -32,7 +32,7 @@ const INITIAL_HALF_LAT_SPAN: f32 = 0.03;
 // TODO: switch to automatically setting and updating jfa scale based on window dimensions (or maybe measure performance and increase if too slow)
 /// integer scale of jfa render
 /// 2 would mean jfa width and height are half of output
-const JFA_SCALE: u32 = 4;
+const JFA_SCALE: u32 = 8;
 
 /// constants for where/when we are starting from
 const DEPART_INSTANT: DepartInstant = DepartInstant {
@@ -79,14 +79,4 @@ fn main() {
 
     // Shader
     shader::run(&gtfs_data, &arrival_times).block_on();
-}
-
-// TODO: remove this struct, same reason as removing `initialize_gpu_grid()`
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuGridCell {
-    lat_index: i32,
-    lon_index: i32,
-    start: u32,
-    count: u32,
 }

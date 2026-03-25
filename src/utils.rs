@@ -121,3 +121,9 @@ pub fn str_to_u32_hash(s: &str) -> u32 {
 
     (hasher.finish() & 0xFFFF_FFFF) as u32
 }
+
+/// finds the log base 2 of an unsigned integer
+pub fn log2(x: u32) -> u32 {
+    debug_assert!(x > 0, "can't compute log of zero");
+    31 - x.leading_zeros()
+}

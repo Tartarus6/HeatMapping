@@ -10,8 +10,6 @@ use crate::{
 
 use winit::event_loop::EventLoop;
 
-// TODO: switch to giving shader some kinda spatial grid rather than having it iterate through all stops for every pixel
-// TODO: switch to a multi-stage aproach that first calculates the arrival time to each pixel, then turns that into a heatmap
 /// Main function to run the app and the shaders
 pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>) {
     let event_loop = EventLoop::new().unwrap();
@@ -23,7 +21,7 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>) {
         build_gpu_hash(gtfs_data, arrival_times).unwrap_or_default();
     println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
 
-    let mut app = App::new(gtfs_data, gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops);
+    let mut app = App::new(gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops);
 
     event_loop.run_app(&mut app).unwrap();
 }
