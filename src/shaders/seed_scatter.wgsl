@@ -99,6 +99,7 @@ fn try_claim(pixel_i: u32, my_idx1: u32) {
         let cur = atomicLoad(&seeds[pixel_i]);
 
         if cur == 0 {
+            // Note: as of writing this comment, wgsl analyzer does not think `atomicCompareExchangeWeak` is a valid function. But it is though
             let r = atomicCompareExchangeWeak(&seeds[pixel_i], 0, my_idx1);
             if r.exchanged { break; }
             continue;
@@ -108,6 +109,7 @@ fn try_claim(pixel_i: u32, my_idx1: u32) {
             break; // current winner is better (or equal with tie-break)
         }
 
+        // Note: as of writing this comment, wgsl analyzer does not think `atomicCompareExchangeWeak` is a valid function. But it is though
         let r = atomicCompareExchangeWeak(&seeds[pixel_i], cur, my_idx1);
         if r.exchanged { break; }
         // else: lost race, retry
