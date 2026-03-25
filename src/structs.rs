@@ -273,8 +273,6 @@ pub struct ShaderConfig {
     pub bbox_min_lon: f32,
     pub bbox_max_lat: f32,
     pub bbox_max_lon: f32,
-    pub gpu_grid_cell_size: f32,         // size of each cell (in radians)
-    pub begin_time: f32,                 // departure time in seconds since midnight
     pub max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
     pub inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }

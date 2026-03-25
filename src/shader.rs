@@ -21,7 +21,7 @@ pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>) {
         build_gpu_hash(gtfs_data, arrival_times).unwrap_or_default();
     println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
 
-    let mut app = App::new(gtfs_data, gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops);
+    let mut app = App::new(gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops);
 
     event_loop.run_app(&mut app).unwrap();
 }

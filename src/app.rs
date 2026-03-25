@@ -12,7 +12,7 @@ use crate::structs::{GpuStop, Position};
 use crate::utils::meters_per_pixel;
 use crate::{
     DEPART_INSTANT, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, WALKING_SPEED,
-    structs::{GTFSData, GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
+    structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
     utils::bbox_from_center,
 };
 
@@ -36,13 +36,10 @@ pub struct App {
 
 impl App {
     pub fn new(
-        gtfs_data: &GTFSData,
         gpu_grid_cell_keys: Vec<GpuGridCellKey>,
         gpu_grid_cell_vals: Vec<GpuGridCellVal>,
         gpu_stops: Vec<GpuStop>,
     ) -> Self {
-        let begin_time = DEPART_INSTANT.time;
-
         let shader_config = ShaderConfig {
             width: MAX_DIM,    // dummy init value (will be overwritten)
             height: MAX_DIM,   // dummy init value (will be overwritten)
@@ -50,8 +47,6 @@ impl App {
             bbox_min_lon: 1.0, // dummy init value (will be overwritten)
             bbox_max_lat: 0.0, // dummy init value (will be overwritten)
             bbox_max_lon: 1.0, // dummy init value (will be overwritten)
-            gpu_grid_cell_size: gtfs_data.grid.cell_size as f32,
-            begin_time: begin_time as f32,
             max_walk_transfer_distance: MAX_WALK_TRANSFER_DISTANCE as f32,
             inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
         };
