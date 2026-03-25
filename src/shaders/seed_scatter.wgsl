@@ -56,17 +56,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if i >= arrayLength(&grid_stops) { return; }
 
-    var bounding_box_min = vec2(config.bbox_min_lat, config.bbox_min_lon);
-    var bounding_box_max = vec2(config.bbox_max_lat, config.bbox_max_lon);
-
     let stop = grid_stops[i];
-
-    // stop position (normalized where [0,1] is within bounding box)
-    let stop_uv = (vec2f(stop.lat, stop.lon) - bounding_box_min) / (bounding_box_max - bounding_box_min);
 
     // TODO: stops some distance around the bounding box should be included, since they might still be the fastest way to somewhere in the bounding box
     // cull stop if not within bounding box
-    if 0 > stop_uv.x || stop_uv.x > 1 || 0 > stop_uv.y || stop_uv.y > 1 { return; }
+    if config.bbox_min_lat > stop.lat || stop.lat > config.bbox_max_lat ||
+        config.bbox_min_lon > stop.lon || stop.lon > config.bbox_max_lon { return; }
+
+    var bounding_box_min = vec2f(config.bbox_min_lat, config.bbox_min_lon);
+    var bounding_box_max = vec2f(config.bbox_max_lat, config.bbox_max_lon);
+
+    // stop position (normalized where [0,1] is within bounding box)
+    let stop_uv = (vec2f(stop.lat, stop.lon) - bounding_box_min) / (bounding_box_max - bounding_box_min);
 
     // stop poitions (float pixel coordinates)
     let stop_x = u32(stop_uv.y * jfa_config.jfa_width);
