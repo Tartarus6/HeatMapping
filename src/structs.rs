@@ -80,8 +80,6 @@ pub struct Position {
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Stop {
-    pub stop_id: u32,
-    // name: String,
     pub position: Position,
 }
 
@@ -133,14 +131,11 @@ impl RouteType {
 
 #[derive(Serialize, Deserialize)]
 pub struct Route {
-    pub route_id: u32,
     pub route_type: RouteType,
-    pub name: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Trip {
-    pub trip_id: u32,
     pub route_id: u32,
     pub service_id: u32,
     pub stop_times: Vec<StopTime>,
@@ -148,7 +143,6 @@ pub struct Trip {
 
 #[derive(Serialize, Deserialize)]
 pub struct StopTime {
-    pub trip_id: u32,
     pub stop_id: u32,
     /// seconds since midnight (note, can sometimes be greater than 24 hours worth)
     pub arrival_time: u32,
@@ -176,20 +170,20 @@ impl Date {
     }
 }
 
+/// Note: `from_stop_id` is not declared, since it's used as the key in the `connections` HashMap
 #[derive(Serialize, Deserialize)]
 pub struct Transfer {
-    pub from_stop_id: u32,
     pub to_stop_id: u32,
     /// (in seconds)
     pub min_transfer_time: u32,
 }
 
+/// Note: `from_stop_id` is not declared, since it's used as the key in the `connections` HashMap
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Connection {
-    pub from_stop_id: u32,
     pub to_stop_id: u32,
-    /// id of parent trip
-    pub trip_id: u32,
+    /// service id of parent trip
+    pub service_id: u32,
     /// time when arriving at destination (neighbor) stop (in seconds since midnight)
     pub arrival_time: u32,
     /// time when departing towards (neighbor) stop (in seconds since midnight)
@@ -232,32 +226,53 @@ pub struct GTFSData {
 }
 
 // --- Shader Structs ---
+/// Used as a key to find a `GpuGridCellVal`
+/// Each spatial grid cell has a unique `GpuGridCellKey` value
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGridCellKey {
-    pub lat: i32,
-    pub lon: i32,
+    /// latitude cell index
+    pub lat_index: i32,
+    /// longitude cell index
+    pub lon_index: i32,
 }
 
+/// Found using `GpuGridCellKey`
+/// Used to find the portion of the GpuStop array that corresponds to this specific spatial grid cell
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGridCellVal {
+    /// Defines the starting index of the GpuStop array that corresponds to this spatial grid cell
     pub start: u32,
+    /// Defines how many indeces of the GpuStop array are part of this spatial grid cell
     pub count: u32,
+}
+
+// TODO: idea - what if all of the lon and lat were stored as i32 instead of f32, to increase precision, since lat and lon have min and max pretty close to zero, a lot of float values are unused
+/// Instance of a stop for use in arrays in gpu buffers
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuStop {
+    /// Latitude
+    pub lat: f32,
+    /// Longitude
+    pub lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    pub arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    pub _pad0: u32,
 }
 
 // TODO: switch width, height, begin_time, and max_time to be u32
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderConfig {
-    pub width: f32,  // how many pixels wide the image is
-    pub height: f32, // how many pixels high the image is
+    pub width: u32,  // how many pixels wide the image is
+    pub height: u32, // how many pixels high the image is
     pub bbox_min_lat: f32,
     pub bbox_min_lon: f32,
     pub bbox_max_lat: f32,
     pub bbox_max_lon: f32,
-    pub gpu_grid_cell_size: f32,         // size of each cell (in radians)
-    pub begin_time: f32,                 // departure time in seconds since midnight
     pub max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
     pub inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }
@@ -266,19 +281,12 @@ pub struct ShaderConfig {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct JFAConfig {
-    pub jfa_width: f32,       // how many pixels wide the image is
-    pub jfa_height: f32,      // how many pixels high the image is
-    pub jump_size: f32,       // jump size for JFA
+    pub jfa_width: u32,       // how many pixels wide the image is
+    pub jfa_height: u32,      // how many pixels high the image is
+    pub jump_size: u32,       // jump size for JFA
     pub meters_per_px_x: f32, // approximate number of meters per x pixel
     pub meters_per_px_y: f32, // approximate number of meters per y pixel
 }
-
-// #[repr(C)]
-// #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-// pub struct MinMax {
-//     pub min_time: atomic<u32>,
-//     pub max_time: atomic<u32>,
-// }
 
 /// parses stop_id, handling both "600737" and "stoparea:600737" formats
 pub fn parse_stop_id(stop_id_str: &str) -> Result<u32, Box<dyn std::error::Error>> {

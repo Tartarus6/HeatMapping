@@ -15,73 +15,103 @@ struct GpuGridCellVal {
 }
 
 struct ShaderConfig {
-    width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels high the image is
+    width: u32,  // how many pixels wide the image is
+    height: u32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
     bbox_max_lon: f32,
-    gpu_grid_cell_size: f32, // size of each cell (in radians)
-    begin_time: f32,         // departure time in seconds since midnight
     max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
     inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }
 
 struct JFAConfig {
-    jfa_width: f32,       // how many pixels wide the image is
-    jfa_height: f32,      // how many pixels high the image is
-    jump_size: f32,       // jump size for JFA
+    jfa_width: u32,       // how many pixels wide the image is
+    jfa_height: u32,      // how many pixels high the image is
+    jump_size: u32,       // jump size for JFA
     meters_per_px_x: f32, // approximate number of meters per x pixel
     meters_per_px_y: f32, // approximate number of meters per y pixel
 }
 
-/// [lat, lon, arrival_time, None]
-@group(0) @binding(0) var<storage, read> grid_stops: array<vec4<f32>>;
+struct GpuStop {
+    /// Latitude
+    lat: f32,
+    /// Longitude
+    lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    _pad0: u32,
+}
+
+@group(0) @binding(0) var<storage, read> grid_stops: array<GpuStop>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
-@group(0) @binding(2) var out_texture: texture_storage_2d<r32uint, write>;
-@group(0) @binding(3) var<uniform> jfa_config: JFAConfig;
+@group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
+@group(0) @binding(3) var<storage, read_write> seeds: array<atomic<u32>>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if i >= arrayLength(&grid_stops) { return; }
 
-    var bounding_box_min = vec2(config.bbox_min_lat, config.bbox_min_lon);
-    var bounding_box_max = vec2(config.bbox_max_lat, config.bbox_max_lon);
-
     let stop = grid_stops[i];
-
-    // stop position (normalized where [0,1] is within bounding box)
-    let stop_uv = (stop.xy - bounding_box_min) / (bounding_box_max - bounding_box_min);
 
     // TODO: stops some distance around the bounding box should be included, since they might still be the fastest way to somewhere in the bounding box
     // cull stop if not within bounding box
-    if 0 > stop_uv.x || stop_uv.x > 1 || 0 > stop_uv.y || stop_uv.y > 1 { return; }
+    if config.bbox_min_lat > stop.lat || stop.lat > config.bbox_max_lat ||
+        config.bbox_min_lon > stop.lon || stop.lon > config.bbox_max_lon { return; }
+
+    var bounding_box_min = vec2f(config.bbox_min_lat, config.bbox_min_lon);
+    var bounding_box_max = vec2f(config.bbox_max_lat, config.bbox_max_lon);
+
+    // stop position (normalized where [0,1] is within bounding box)
+    let stop_uv = (vec2f(stop.lat, stop.lon) - bounding_box_min) / (bounding_box_max - bounding_box_min);
 
     // stop poitions (float pixel coordinates)
-    let stop_x = u32(stop_uv.y * jfa_config.jfa_width);
-    let stop_y = u32((1.0 - stop_uv.x) * jfa_config.jfa_height);
+    let stop_x = u32(stop_uv.y * f32(jfa_config.jfa_width));
+    let stop_y = u32((1.0 - stop_uv.x) * f32(jfa_config.jfa_height));
 
     // store stop index in texture
     let packed: vec4<u32> = vec4<u32>(i + 1, 0u, 0u, 0u); // offset added to differentiate index 0 from a cleared pixel
 
-    // write to a 3x3 of pixels
-    // this effectively makes the JFA into a variant sometimes called 1+JFA, where a step size of 1 is done, then steps proceed as normal
-    for (var dx = -1; dx <= 1; dx++) {
-        for (var dy = -1; dy <= 1; dy++) {
-            let px: i32 = i32(stop_x) + dx;
-            let py: i32 = i32(stop_y) + dy;
+    // bounds guard
+    if stop_x < 0 || stop_y < 0 || stop_x >= jfa_config.jfa_width || stop_y >= jfa_config.jfa_height {
+        return;
+    }
 
-            // bounds guard
-            if px < 0 || py < 0 || px >= i32(jfa_config.jfa_width) || py >= i32(jfa_config.jfa_height) {
-                continue;
-            }
+    try_claim(stop_x + jfa_config.jfa_width * stop_y, i + 1u);
+}
 
-            textureStore(
-                out_texture,
-                vec2<i32>(i32(stop_x) + dx, i32(stop_y) + dy),
-                packed
-            );
+fn is_better(my_idx1: u32, cur_idx1: u32) -> bool {
+    // idx1 is 1-based stored index; convert to 0-based for stop lookup
+    let my_idx0 = my_idx1 - 1u;
+    let cur_idx0 = cur_idx1 - 1u;
+
+    let my_arr = grid_stops[my_idx0].arrival_time;
+    let cur_arr = grid_stops[cur_idx0].arrival_time;
+
+    // tie-breaker for determinism: lower index wins
+    return (my_arr < cur_arr) || (my_arr == cur_arr && my_idx1 < cur_idx1);
+}
+
+fn try_claim(pixel_i: u32, my_idx1: u32) {
+    loop {
+        let cur = atomicLoad(&seeds[pixel_i]);
+
+        if cur == 0 {
+            // Note: as of writing this comment, wgsl analyzer does not think `atomicCompareExchangeWeak` is a valid function. But it is though
+            let r = atomicCompareExchangeWeak(&seeds[pixel_i], 0, my_idx1);
+            if r.exchanged { break; }
+            continue;
         }
+
+        if !is_better(my_idx1, cur) {
+            break; // current winner is better (or equal with tie-break)
+        }
+
+        // Note: as of writing this comment, wgsl analyzer does not think `atomicCompareExchangeWeak` is a valid function. But it is though
+        let r = atomicCompareExchangeWeak(&seeds[pixel_i], cur, my_idx1);
+        if r.exchanged { break; }
+        // else: lost race, retry
     }
 }

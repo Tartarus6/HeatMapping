@@ -1,26 +1,35 @@
 struct ShaderConfig {
-    width: f32,  // how many pixels wide the image is
-    height: f32, // how many pixels high the image is
+    width: u32,  // how many pixels wide the image is
+    height: u32, // how many pixels high the image is
     bbox_min_lat: f32,
     bbox_min_lon: f32,
     bbox_max_lat: f32,
     bbox_max_lon: f32,
-    gpu_grid_cell_size: f32, // size of each cell (in radians)
-    begin_time: f32,         // departure time in seconds since midnight
     max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
     inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
 }
 
 struct JFAConfig {
-    jfa_width: f32,
-    jfa_height: f32,
-    jump_size: f32,
+    jfa_width: u32,
+    jfa_height: u32,
+    jump_size: u32,
     meters_per_px_x: f32,
     meters_per_px_y: f32,
 }
 
+struct GpuStop {
+    /// Latitude
+    lat: f32,
+    /// Longitude
+    lon: f32,
+    /// Arrival time to stop in seconds since midnight
+    arrival_time: u32,
+    /// Just padding to 16-byte allignment, not for use
+    _pad0: u32,
+}
+
 // [lat, lon, arrival_time, _]
-@group(0) @binding(0) var<storage, read> grid_stops: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> grid_stops: array<GpuStop>;
 @group(0) @binding(1) var<uniform> config: ShaderConfig;
 @group(0) @binding(2) var<uniform> jfa_config: JFAConfig;
 
@@ -50,12 +59,10 @@ fn vs_main(
     );
 
     let stop = grid_stops[iid];
-    let lat = stop.x;
-    let lon = stop.y;
 
     // cull stop if not within bounding box
-    if lat < config.bbox_min_lat || lat > config.bbox_max_lat ||
-        lon < config.bbox_min_lon || lon > config.bbox_max_lon {
+    if stop.lat < config.bbox_min_lat || stop.lat > config.bbox_max_lat ||
+        stop.lon < config.bbox_min_lon || stop.lon > config.bbox_max_lon {
         var o: VsOut;
         o.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0); // outside clip
         o.local = vec2<f32>(0.0, 0.0);
@@ -63,12 +70,12 @@ fn vs_main(
     }
 
     // world -> uv
-    let u = (lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
-    let v = (config.bbox_max_lat - lat) / (config.bbox_max_lat - config.bbox_min_lat);
+    let u = (stop.lon - config.bbox_min_lon) / (config.bbox_max_lon - config.bbox_min_lon);
+    let v = (config.bbox_max_lat - stop.lat) / (config.bbox_max_lat - config.bbox_min_lat);
 
     // uv -> pixel
-    let x_px = u * config.width;
-    let y_px = v * config.height;
+    let x_px = u * f32(config.width);
+    let y_px = v * f32(config.height);
 
     // meters -> pixels (approx)
     let mpp = min(jfa_config.meters_per_px_x, jfa_config.meters_per_px_y);
@@ -78,8 +85,8 @@ fn vs_main(
     let px = vec2<f32>(x_px, y_px) + local * radius_px;
 
     // pixel -> NDC
-    let ndc_x = (px.x / config.width) * 2.0 - 1.0;
-    let ndc_y = 1.0 - (px.y / config.height) * 2.0;
+    let ndc_x = (px.x / f32(config.width)) * 2.0 - 1.0;
+    let ndc_y = 1.0 - (px.y / f32(config.height)) * 2.0;
 
     var out: VsOut;
     out.pos = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
