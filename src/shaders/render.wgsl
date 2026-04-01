@@ -67,9 +67,9 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
 @group(0) @binding(4) var<storage, read> minmax: MinMax;
 
 /// color (in oklch) of the earliest arrival_times
-const COLOR_FAST = vec3f(0.9333, 0.2068, 105.88); // yellow
+const COLOR_FAST = vec3f(0.92, 0.2073, 114.35); // yellow
 /// color (in oklch) of the latest arrival_times
-const COLOR_SLOW = vec3f(0.44, 0.2068, 355.76); // purple
+const COLOR_SLOW = vec3f(0.3339, 0.1346, 384.35); // red
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
