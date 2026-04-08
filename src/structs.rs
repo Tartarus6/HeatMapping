@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::utils::str_to_u32_hash;
 
+/// Represents the instant of departure (location and time)
+#[derive(Clone, Copy)]
 pub struct DepartInstant {
     pub position: Position,
     /// seconds since midnight
@@ -150,7 +152,7 @@ pub struct StopTime {
     pub departure_time: u32,
 }
 
-#[derive(Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct Date {
     pub year: u32,
     pub month: u8,
@@ -275,6 +277,8 @@ pub struct ShaderConfig {
     pub bbox_max_lon: f32,
     pub max_walk_transfer_distance: f32, // maximum distance to walk between stops (used for culling) (this option can be too greedy, it can cull optimal paths) (distance in meters)
     pub inverse_walk_speed_mps: f32,     // walking speed in seconds per meter
+    pub depart_lat: f32,                 // latitude of departure position
+    pub depart_lon: f32,                 // longitude of departure position
 }
 
 // TODO: switch width, height, and jump_size to be u32

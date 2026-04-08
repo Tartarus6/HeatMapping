@@ -7,8 +7,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
+use crate::CACHE_DIRECTORY;
+use crate::structs::DepartInstant;
 use crate::utils::{haversine_distance, str_to_u32_hash};
-use crate::{CACHE_DIRECTORY, DEPART_INSTANT};
 use crate::{
     GTFS_DIRECTORY, MAX_WALK_TRANSFER_DISTANCE,
     structs::{
@@ -21,36 +22,39 @@ use crate::{
 /// Gets the gtfs data for use by the program.
 /// If a cache is present, it'll just use the cache,
 /// otherwise, the GTFS files are parsed.
-pub fn get_gtfs_data() -> GTFSData {
-    let gtfs_data = match get_culled_gtfs_data(match load_gtfs_data("cache/gtfs_data") {
-        // try loading from cache if possible
-        Ok(data) => {
-            println!("Cache found - using cached GTFS data...");
-            data
-        }
-        Err(_) => {
-            println!("Cache not found - parsing GTFS data...");
+pub fn get_gtfs_data(depart_instant: &DepartInstant) -> GTFSData {
+    let gtfs_data = match get_culled_gtfs_data(
+        match load_gtfs_data("cache/gtfs_data") {
+            // try loading from cache if possible
+            Ok(data) => {
+                println!("Cache found - using cached GTFS data...");
+                data
+            }
+            Err(_) => {
+                println!("Cache not found - parsing GTFS data...");
 
-            // if couldnt load gtfs data from cache, parse from gtfs files
-            let data = match parse_data() {
-                Ok(data) => data,
-                Err(err) => panic!("error parsing GTFS data: {:?}", err),
-            };
+                // if couldnt load gtfs data from cache, parse from gtfs files
+                let data = match parse_data() {
+                    Ok(data) => data,
+                    Err(err) => panic!("error parsing GTFS data: {:?}", err),
+                };
 
-            // save that parsed data into the cache
-            match save_gtfs_data(
-                &data,
-                format!("{}{}", CACHE_DIRECTORY, "gtfs_data").as_str(),
-            ) {
-                Ok(()) => println!("Saved GTFS data in cache file"),
-                Err(err) => panic!("error saving GTFS data: {:?}", err),
-            };
+                // save that parsed data into the cache
+                match save_gtfs_data(
+                    &data,
+                    format!("{}{}", CACHE_DIRECTORY, "gtfs_data").as_str(),
+                ) {
+                    Ok(()) => println!("Saved GTFS data in cache file"),
+                    Err(err) => panic!("error saving GTFS data: {:?}", err),
+                };
 
-            data // return that data
-        }
-    }) {
+                data // return that data
+            }
+        },
+        depart_instant,
+    ) {
         Ok(data) => data,
-        Err(err) => panic!("error culling GTFS data: {:?}", err),
+        Err(err) => panic!("errpr culling GTFS data: {:?}", err),
     };
 
     return gtfs_data;
@@ -293,9 +297,12 @@ fn parse_data() -> Result<GTFSData, Box<dyn std::error::Error>> {
 ///  - `connections`
 ///
 /// Other fields are left as-is
-pub fn get_culled_gtfs_data(gtfs_data: GTFSData) -> Result<GTFSData, Box<dyn std::error::Error>> {
+pub fn get_culled_gtfs_data(
+    gtfs_data: GTFSData,
+    depart_instant: &DepartInstant,
+) -> Result<GTFSData, Box<dyn std::error::Error>> {
     // get culled connections
-    let culled_connections = get_culled_connections(&gtfs_data)?;
+    let culled_connections = get_culled_connections(&gtfs_data, depart_instant)?;
 
     let culled_gtfs_data = GTFSData {
         stops: gtfs_data.stops,
@@ -316,6 +323,7 @@ pub fn get_culled_gtfs_data(gtfs_data: GTFSData) -> Result<GTFSData, Box<dyn std
 /// returns a connections hash map with any entries that depart before `min_time` culled
 pub fn get_culled_connections(
     gtfs_data: &GTFSData,
+    depart_instant: &DepartInstant,
 ) -> Result<HashMap<u32, Vec<Connection>>, Box<dyn std::error::Error>> {
     let mut culled_connections_map: HashMap<u32, Vec<Connection>> = HashMap::new();
 
@@ -323,13 +331,13 @@ pub fn get_culled_connections(
         for connection in connections {
             // TODO: add an upper bound cull as well (currently only connections before the time of departure are culled)
             // if departure_time already passed, skip it
-            if connection.departure_time < DEPART_INSTANT.time {
+            if connection.departure_time < depart_instant.time {
                 continue;
             }
 
             let service_exception_type = gtfs_data
                 .services
-                .get(&(connection.service_id, DEPART_INSTANT.date))
+                .get(&(connection.service_id, depart_instant.date))
                 .ok_or("service not found (non-fatal)");
 
             // if connection not in service today, skip it

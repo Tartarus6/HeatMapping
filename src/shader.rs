@@ -5,23 +5,20 @@ use std::{collections::HashMap, time::Instant, u32};
 use crate::{
     GTFSData,
     app::App,
-    structs::{GpuGridCellKey, GpuGridCellVal, GpuStop},
+    structs::{DepartInstant, GpuGridCellKey, GpuGridCellVal, GpuStop},
 };
 
 use winit::event_loop::EventLoop;
 
 /// Main function to run the app and the shaders
-pub async fn run(gtfs_data: &GTFSData, arrival_times: &HashMap<u32, u32>) {
+pub async fn run(
+    gtfs_data: GTFSData,
+    // arrival_times: &HashMap<u32, u32>,
+    depart_instant: DepartInstant,
+) {
     let event_loop = EventLoop::new().unwrap();
 
-    // Gpu spatial grid initialization
-    let now = Instant::now();
-    // gpu_grid_cell_keys, gpu_grid_cell_vals, and gpu_stops default to empty if hash build fails
-    let (gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops) =
-        build_gpu_hash(gtfs_data, arrival_times).unwrap_or_default();
-    println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
-
-    let mut app = App::new(gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops);
+    let mut app = App::new(gtfs_data, depart_instant);
 
     event_loop.run_app(&mut app).unwrap();
 }

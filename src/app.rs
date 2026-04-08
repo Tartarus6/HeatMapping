@@ -1,6 +1,8 @@
 //! This file contains all regarding the GUI application, draws the window and deals with user input such as panning and zooming, updating the rendering as needed.
 use std::cmp::max;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -8,11 +10,13 @@ use winit::window::WindowId;
 use winit::{application::ApplicationHandler, event_loop::ActiveEventLoop, window::Window};
 
 use crate::MAX_WALK_TRANSFER_DISTANCE;
-use crate::render_state::RenderState;
-use crate::structs::{GpuStop, Position};
+use crate::dijkstra::initialize_dijkstra;
+use crate::render_state::{RenderState, update_gpu_stops_buffers};
+use crate::shader::build_gpu_hash;
+use crate::structs::{DepartInstant, GTFSData, GpuStop, Position};
 use crate::utils::meters_per_pixel;
 use crate::{
-    DEPART_INSTANT, INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, WALKING_SPEED,
+    INITIAL_HALF_LAT_SPAN, JFA_SCALE, MAX_DIM, WALKING_SPEED,
     structs::{GpuGridCellKey, GpuGridCellVal, JFAConfig, ShaderConfig},
     utils::bbox_from_center,
 };
@@ -26,6 +30,10 @@ pub struct App {
     shader_config: ShaderConfig,
     jfa_config: JFAConfig,
 
+    gtfs_data: GTFSData,
+    arrival_times: HashMap<u32, u32>,
+    depart_instant: DepartInstant,
+
     // Post-init data
     window: Option<Arc<Window>>,
     render_state: Option<RenderState>,
@@ -36,11 +44,22 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        gpu_grid_cell_keys: Vec<GpuGridCellKey>,
-        gpu_grid_cell_vals: Vec<GpuGridCellVal>,
-        gpu_stops: Vec<GpuStop>,
-    ) -> Self {
+    pub fn new(gtfs_data: GTFSData, depart_instant: DepartInstant) -> Self {
+        // Dijkstra
+        let now = Instant::now();
+        let arrival_times = match initialize_dijkstra(&gtfs_data, &depart_instant) {
+            Ok(out) => out,
+            Err(err) => panic!("error running dijkstra: {:?}", err),
+        };
+        println!("Dijkstra: {}ms\n", now.elapsed().as_millis());
+
+        // Gpu spatial grid initialization
+        let now = Instant::now();
+        // gpu_grid_cell_keys, gpu_grid_cell_vals, and gpu_stops default to empty if hash build fails
+        let (gpu_grid_cell_keys, gpu_grid_cell_vals, gpu_stops) =
+            build_gpu_hash(&gtfs_data, &arrival_times).unwrap_or_default();
+        println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
+
         let shader_config = ShaderConfig {
             width: MAX_DIM,    // dummy init value (will be overwritten)
             height: MAX_DIM,   // dummy init value (will be overwritten)
@@ -50,6 +69,8 @@ impl App {
             bbox_max_lon: 1.0, // dummy init value (will be overwritten)
             max_walk_transfer_distance: MAX_WALK_TRANSFER_DISTANCE as f32,
             inverse_walk_speed_mps: 1.0 / ((WALKING_SPEED * 1000.0) / 3600.0) as f32,
+            depart_lat: depart_instant.position.lat,
+            depart_lon: depart_instant.position.lon,
         };
 
         let jfa_config = JFAConfig {
@@ -64,6 +85,11 @@ impl App {
             gpu_grid_cell_keys,
             gpu_grid_cell_vals,
             gpu_stops,
+
+            gtfs_data,
+            arrival_times,
+            depart_instant,
+
             shader_config,
             jfa_config,
             window: None,
@@ -84,7 +110,7 @@ impl ApplicationHandler for App {
         );
 
         let size = window.inner_size();
-        let center = DEPART_INSTANT.position;
+        let center = self.depart_instant.position;
         let (bbox_min, bbox_max) =
             bbox_from_center(center, INITIAL_HALF_LAT_SPAN, size.width, size.height);
 
@@ -183,6 +209,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
+                // tracking left clicks for dragging
                 if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => {
@@ -196,9 +223,11 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // right clicking to set a new departure position
                 if button == MouseButton::Right && state == ElementState::Pressed {
+                    // TODO: this render_state.as_mut() seems rather janky. figure out a better solution
                     if let (Some(state), Some(pos)) =
-                        (self.render_state.as_ref(), self.cursor_pos_px)
+                        (self.render_state.as_mut(), self.cursor_pos_px)
                     {
                         let w = state.config.width as f32;
                         let h = state.config.height as f32;
@@ -209,7 +238,7 @@ impl ApplicationHandler for App {
 
                             // normalized coords
                             let u = x / w; // 0..1 left->right
-                            let v = 1.0 - (y / h); // 0..1 bottom->top
+                            let v = y / h; // 0..1 top ->bottom
 
                             // bbox -> world
                             let min_lon = state.shader_config.bbox_min_lon;
@@ -221,6 +250,50 @@ impl ApplicationHandler for App {
                             let lat = max_lat - v * (max_lat - min_lat);
 
                             println!("clicked lat/lon: {:.6}, {:.6}", lat, lon);
+
+                            // update depart instant
+                            self.depart_instant.position.lat = lat;
+                            self.depart_instant.position.lon = lon;
+
+                            // Dijkstra
+                            let now = Instant::now();
+                            self.arrival_times =
+                                match initialize_dijkstra(&self.gtfs_data, &self.depart_instant) {
+                                    Ok(out) => out,
+                                    Err(err) => panic!("error running dijkstra: {:?}", err),
+                                };
+                            println!("Dijkstra: {}ms\n", now.elapsed().as_millis());
+
+                            // Gpu spatial grid initialization
+                            let now = Instant::now();
+                            // gpu_grid_cell_keys, gpu_grid_cell_vals, and gpu_stops default to empty if hash build fails
+                            (
+                                self.gpu_grid_cell_keys,
+                                self.gpu_grid_cell_vals,
+                                self.gpu_stops,
+                            ) = build_gpu_hash(&self.gtfs_data, &self.arrival_times)
+                                .unwrap_or_default();
+                            println!("Gpu grid intiializing: {}ms\n", now.elapsed().as_millis());
+
+                            // TODO: update the render state with the new stops
+                            update_gpu_stops_buffers(
+                                &state.device,
+                                &mut state.buffers,
+                                &self.gpu_grid_cell_keys,
+                                &self.gpu_grid_cell_vals,
+                                &self.gpu_stops,
+                            );
+
+                            state.shader_config.depart_lat = self.depart_instant.position.lat;
+                            state.shader_config.depart_lon = self.depart_instant.position.lon;
+
+                            state.upload_shader_config();
+                            state.recreate_jfa_textures_and_bind_groups();
+
+                            // redraw with the new state
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
                         }
                     }
                 }
@@ -366,6 +439,25 @@ fn pan(state: &mut RenderState, dx: f32, dy: f32) {
     state.shader_config.bbox_max_lat += dlat;
 
     state.upload_shader_config();
+
+    // jfa config update
+    let meters_per_pixel = meters_per_pixel(
+        Position {
+            lat: state.shader_config.bbox_min_lat as f32,
+            lon: state.shader_config.bbox_min_lon as f32,
+        },
+        Position {
+            lat: state.shader_config.bbox_max_lat as f32,
+            lon: state.shader_config.bbox_max_lon as f32,
+        },
+        state.jfa_config.jfa_width as u32,
+        state.jfa_config.jfa_height as u32,
+    );
+
+    state.jfa_config.meters_per_px_x = meters_per_pixel.0;
+    state.jfa_config.meters_per_px_y = meters_per_pixel.1;
+
+    state.upload_jfa_config();
 }
 
 /// Updates the bounding box of the render state in order to fit the new window size.

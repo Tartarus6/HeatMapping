@@ -527,11 +527,11 @@ impl RenderState {
     }
 }
 
-/// From here this is mainly wgpu boilerPlate to make the set up the shaders and pipeline them in order
 // TODO: move this const somewhere better. as well as any other scattered consts (they should prolly all be in main.rs)
-// /// Maximum JFA jump size
+/// Maximum JFA jump size
 const JUMP_MAX: u32 = 1073741824;
 
+/// From here this is mainly wgpu boilerPlate to make the set up the shaders and pipeline them in order
 pub fn initialize_buffers(
     device: &Device,
     gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
@@ -1580,6 +1580,36 @@ impl ShaderResources {
             ],
         });
     }
+}
+
+// TODO: move this function to an impl of Buffers
+pub fn update_gpu_stops_buffers(
+    device: &Device,
+    buffers: &mut Buffers,
+    gpu_grid_cell_keys: &Vec<GpuGridCellKey>,
+    gpu_grid_cell_vals: &Vec<GpuGridCellVal>,
+    gpu_stops: &Vec<GpuStop>,
+) {
+    // TODO: use gpu_grid_cell_keys_buffer and gpu_grid_cell_vals_buffer in planned dijkstra shader
+    let gpu_grid_cell_keys_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GPU Grid Cell Keys Buffer"),
+        contents: bytemuck::cast_slice(&gpu_grid_cell_keys),
+        usage: BufferUsages::STORAGE,
+    });
+
+    let gpu_grid_cell_vals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GPU Grid Cell Values Buffer"),
+        contents: bytemuck::cast_slice(&gpu_grid_cell_vals),
+        usage: BufferUsages::STORAGE,
+    });
+
+    let gpu_stops_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("GPU Grid Stops Buffer"),
+        contents: bytemuck::cast_slice(&gpu_stops),
+        usage: BufferUsages::STORAGE,
+    });
+
+    buffers.gpu_stops_buffer = gpu_stops_buffer;
 }
 
 fn create_jfa_texture_pair(

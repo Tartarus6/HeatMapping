@@ -5,7 +5,10 @@ use std::{
     collections::{BinaryHeap, HashMap},
 };
 
-use crate::{DEPART_INSTANT, structs::GTFSData, utils::get_walk_time};
+use crate::{
+    structs::{DepartInstant, GTFSData},
+    utils::get_walk_time,
+};
 
 // TODO: is there a way to reuse the data from other dijkstra runs, rather than having to totally recalculate for each different starting position?
 // TODO: (maybe) optimize by finding "hub nodes", and precomputing the travel times between them. then using that hub-to-hub time as an offset to prevent the need to calculate paths across hubs
@@ -14,19 +17,20 @@ use crate::{DEPART_INSTANT, structs::GTFSData, utils::get_walk_time};
 /// returns HashMap<to_stop_id: u32, arrival_time: u32> (arrival time in secons since midnight)
 pub fn initialize_dijkstra(
     gtfs_data: &GTFSData,
+    depart_instant: &DepartInstant,
 ) -> Result<HashMap<u32, u32>, Box<dyn std::error::Error>> {
     let mut arrival_times: HashMap<u32, u32> = HashMap::new(); // <to_stop_id, arrival_time>
 
     let mut priority_queue: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // Min-heap (priority queue) storing pairs of (arrival_time, stop_id)
 
     // initialize priority queue and arrival times with the time it would take to walk there from the starting position
-    for stop_id in gtfs_data.grid.get_nearby(DEPART_INSTANT.position) {
+    for stop_id in gtfs_data.grid.get_nearby(depart_instant.position) {
         let stop = gtfs_data
             .stops
             .get(&stop_id)
             .ok_or("walking to stop didnt exist")?;
         let arrival_time =
-            DEPART_INSTANT.time + get_walk_time(DEPART_INSTANT.position, stop.position);
+            depart_instant.time + get_walk_time(depart_instant.position, stop.position);
         arrival_times.insert(stop_id, arrival_time);
         priority_queue.push(Reverse((arrival_time, stop_id))); // push the starting stop onto the priority queue
     }
